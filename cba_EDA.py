@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import seaborn as sns
@@ -128,11 +127,11 @@ else:
             st.chat_message("user").write(user_input)
 
             # Prepare context from dataset
-            context = f"Summary statistics:
+            context = f"""Summary statistics:
 {numeric_df.describe().to_string()}
 
 Missing values:
-{df.isnull().sum().to_string()}"
+{df.isnull().sum().to_string()}"""
 
             try:
                 response = client.chat.completions.create(
