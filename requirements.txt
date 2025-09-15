@@ -6,3 +6,4 @@ openai
 fpdf
 flask
 openai
+signal
