@@ -4,3 +4,5 @@ seaborn
 matplotlib
 openai
 fpdf
+flask
+openai
