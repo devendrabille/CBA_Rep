@@ -6,3 +6,7 @@ openai
 fpdf
 flask
 ollama
+scikit-learn
+xgboost
+lightgbm
+plotly
