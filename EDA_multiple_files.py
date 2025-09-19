@@ -150,48 +150,68 @@ if uploaded_files:
                 features = df.drop(columns=[target_col])
                 target = df[target_col]
 
-                # Encode categorical features
                 for col in features.select_dtypes(include=['object', 'category']).columns:
                     features[col] = LabelEncoder().fit_transform(features[col].astype(str))
 
-                # Encode target if classification
                 is_classification = target.nunique() <= 10 and target.dtype == 'object'
                 if is_classification:
                     target = LabelEncoder().fit_transform(target.astype(str))
 
-                # Train-test split
                 X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
 
-                # Model training
                 model_type = "Classifier" if is_classification else "Regressor"
                 st.write(f"Training Gradient Boosting {model_type}...")
                 model = GradientBoostingClassifier() if is_classification else GradientBoostingRegressor()
                 model.fit(X_train, y_train)
-
-                # Evaluation
-                st.subheader("Model Evaluation")
                 y_pred = model.predict(X_test)
-                if is_classification:
-                    report = classification_report(y_test, y_pred, output_dict=True)
-                    st.write("Classification Report:")
-                    st.json(report)
-                else:
-                    mse = mean_squared_error(y_test, y_pred)
-                    r2 = r2_score(y_test, y_pred)
-                    st.write(f"Mean Squared Error: {mse:.2f}")
-                    st.write(f"R² Score: {r2:.2f}")
 
-                # Feature importance
-                st.subheader("Feature Importance")
-                importances = model.feature_importances_
-                importance_df = pd.DataFrame({
-                    'Feature': features.columns,
-                    'Importance': importances
-                }).sort_values(by='Importance', ascending=False)
-                st.write(importance_df)
-                fig, ax = plt.subplots()
-                sns.barplot(x='Importance', y='Feature', data=importance_df, ax=ax)
-                st.pyplot(fig)
+                tab1, tab2, tab3 = st.tabs(["📊 Evaluation", "📈 Feature Importance", "✅ Business Summary"])
+
+                with tab1:
+                    st.subheader("Model Evaluation")
+                    if is_classification:
+                        report = classification_report(y_test, y_pred, output_dict=True)
+                        st.write("Classification Report:")
+                        st.json(report)
+                    else:
+                        mse = mean_squared_error(y_test, y_pred)
+                        r2 = r2_score(y_test, y_pred)
+                        st.write(f"Mean Squared Error: {mse:.2f}")
+                        st.write(f"R² Score: {r2:.2f}")
+
+                with tab2:
+                    st.subheader("Feature Importance")
+                    importances = model.feature_importances_
+                    importance_df = pd.DataFrame({
+                        'Feature': features.columns,
+                        'Importance': importances
+                    }).sort_values(by='Importance', ascending=False)
+                    st.write(importance_df)
+                    fig, ax = plt.subplots()
+                    sns.barplot(x='Importance', y='Feature', data=importance_df, ax=ax)
+                    st.pyplot(fig)
+
+                with tab3:
+                    st.subheader("Business-Friendly Accuracy Summary")
+                    if is_classification:
+                        accuracy = model.score(X_test, y_test)
+                        accuracy_percent = accuracy * 100
+                        st.metric(label="Model Accuracy", value=f"{accuracy_percent:.2f}%")
+                    else:
+                        r2 = r2_score(y_test, y_pred)
+                        accuracy_percent = r2 * 100
+                        st.metric(label="Model R² Score (as Accuracy)", value=f"{accuracy_percent:.2f}%")
+
+                    if accuracy_percent >= 90:
+                        summary = "✅ Excellent model performance. Highly reliable for business decisions."
+                    elif accuracy_percent >= 75:
+                        summary = "🟢 Good model performance. Suitable for most business use cases."
+                    elif accuracy_percent >= 60:
+                        summary = "🟡 Moderate performance. May need further tuning or more data."
+                    else:
+                        summary = "🔴 Low performance. Not recommended for critical decisions without improvements."
+
+                    st.info(summary)
 
             # --- REPORT GENERATION ---
             st.subheader("Downloadable Report")
