@@ -6,18 +6,22 @@ import io
 import os
 from openai import OpenAI
 from fpdf import FPDF
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+from sklearn.metrics import classification_report, mean_squared_error, r2_score
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("Agentic EDA Tool with AI Insights/works for multiple files")
+st.title("Agentic EDA Tool with AI Insights & Model Training")
 st.write("Upload one or more CSV files to begin automated exploratory data analysis and interact with AI for deeper insights.")
 
 uploaded_files = st.file_uploader("Choose CSV files", type="csv", accept_multiple_files=True)
 
 if uploaded_files:
     for uploaded_file in uploaded_files:
-        with st.expander(f"EDA for {uploaded_file.name}", expanded=True):
+        with st.expander(f"EDA & Modeling for {uploaded_file.name}", expanded=True):
             df = pd.read_csv(uploaded_file)
 
             # --- BASIC EDA ---
@@ -138,6 +142,57 @@ if uploaded_files:
             except Exception as e:
                 st.error(f"Error calling OpenAI API: {e}")
 
+            # --- MODEL TRAINING ---
+            st.subheader("Model Training: Gradient Boosting")
+            target_col = st.selectbox("Select Target Column", df.columns, key=f"target_{uploaded_file.name}")
+
+            if target_col:
+                features = df.drop(columns=[target_col])
+                target = df[target_col]
+
+                # Encode categorical features
+                for col in features.select_dtypes(include=['object', 'category']).columns:
+                    features[col] = LabelEncoder().fit_transform(features[col].astype(str))
+
+                # Encode target if classification
+                is_classification = target.nunique() <= 10 and target.dtype == 'object'
+                if is_classification:
+                    target = LabelEncoder().fit_transform(target.astype(str))
+
+                # Train-test split
+                X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
+
+                # Model training
+                model_type = "Classifier" if is_classification else "Regressor"
+                st.write(f"Training Gradient Boosting {model_type}...")
+                model = GradientBoostingClassifier() if is_classification else GradientBoostingRegressor()
+                model.fit(X_train, y_train)
+
+                # Evaluation
+                st.subheader("Model Evaluation")
+                y_pred = model.predict(X_test)
+                if is_classification:
+                    report = classification_report(y_test, y_pred, output_dict=True)
+                    st.write("Classification Report:")
+                    st.json(report)
+                else:
+                    mse = mean_squared_error(y_test, y_pred)
+                    r2 = r2_score(y_test, y_pred)
+                    st.write(f"Mean Squared Error: {mse:.2f}")
+                    st.write(f"R² Score: {r2:.2f}")
+
+                # Feature importance
+                st.subheader("Feature Importance")
+                importances = model.feature_importances_
+                importance_df = pd.DataFrame({
+                    'Feature': features.columns,
+                    'Importance': importances
+                }).sort_values(by='Importance', ascending=False)
+                st.write(importance_df)
+                fig, ax = plt.subplots()
+                sns.barplot(x='Importance', y='Feature', data=importance_df, ax=ax)
+                st.pyplot(fig)
+
             # --- REPORT GENERATION ---
             st.subheader("Downloadable Report")
             if st.button(f"Generate PDF Report for {uploaded_file.name}"):
@@ -151,4 +206,4 @@ if uploaded_files:
                 with open(report_path, "rb") as f:
                     st.download_button("Download Report", f, file_name=report_path)
 
-            st.success(f"EDA completed for {uploaded_file.name} with advanced insights and suggestions.")
+            st.success(f"EDA and model training completed for {uploaded_file.name}.")
