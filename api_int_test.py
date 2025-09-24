@@ -21,7 +21,6 @@ if prompt:
     ]
     try:
         response = client.chat.completions.create(
-            deployment_id=st.secrets["OPENAI_DEPLOYMENT"],
             messages=messages,
             max_tokens=16384,
             model=deployment
