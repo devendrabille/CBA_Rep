@@ -1,6 +1,8 @@
 import streamlit as st
 from openai import AzureOpenAI
 
+deployment = "simplegptnano"
+
 # --- Azure OpenAI Client Setup ---
 client = AzureOpenAI(
     api_key=st.secrets["OPENAI_API_KEY"],
@@ -21,7 +23,8 @@ if prompt:
         response = client.chat.completions.create(
             deployment_id=st.secrets["OPENAI_DEPLOYMENT"],
             messages=messages,
-            max_tokens=200
+            max_tokens=16384
+            model=deployment
         )
         st.write("### Response")
         st.write(response.choices[0].message.content)
