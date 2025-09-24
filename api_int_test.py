@@ -4,7 +4,7 @@ from openai import AzureOpenAI
 # --- Azure OpenAI Client Setup ---
 client = AzureOpenAI(
     api_key=st.secrets["OPENAI_API_KEY"],
-    api_version="2023-07-01-preview",
+    api_version="2024-12-01-preview",
     azure_endpoint=st.secrets["OPENAI_ENDPOINT"]
 )
 
