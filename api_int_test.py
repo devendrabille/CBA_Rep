@@ -1,0 +1,29 @@
+import streamlit as st
+from openai import AzureOpenAI
+
+# --- Azure OpenAI Client Setup ---
+client = AzureOpenAI(
+    api_key=st.secrets["OPENAI_API_KEY"],
+    api_version="2023-07-01-preview",
+    azure_endpoint=st.secrets["OPENAI_ENDPOINT"]
+)
+
+st.title("Azure OpenAI GPT.nano Test")
+
+prompt = st.text_input("Enter a prompt for GPT.nano")
+
+if prompt:
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": prompt}
+    ]
+    try:
+        response = client.chat.completions.create(
+            deployment_id=st.secrets["OPENAI_DEPLOYMENT"],
+            messages=messages,
+            max_tokens=200
+        )
+        st.write("### Response")
+        st.write(response.choices[0].message.content)
+    except Exception as e:
+        st.error(f"Error calling Azure OpenAI API: {e}")
