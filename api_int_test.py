@@ -22,7 +22,7 @@ if prompt:
     try:
         response = client.chat.completions.create(
             messages=messages,
-            max_tokens=16384,
+            max_completion_tokens=16384,
             model=deployment
         )
         st.write("### Response")
