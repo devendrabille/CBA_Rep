@@ -10,10 +10,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from fpdf import FPDF
 
+deployment = "simplegptnano"
+
 # --- Azure OpenAI Client Setup ---
 client = AzureOpenAI(
     api_key=st.secrets["OPENAI_API_KEY"],
-    api_version="2023-07-01-preview",
+    api_version="2024-12-01-preview",
     azure_endpoint=st.secrets["OPENAI_ENDPOINT"]
 )
 
@@ -41,9 +43,9 @@ if uploaded_files:
             ]
             try:
                 response = client.chat.completions.create(
-                    deployment_id=st.secrets["OPENAI_DEPLOYMENT"],
                     messages=messages,
-                    max_tokens=300
+                    max_completion_tokens=16384,
+                    model=deployment
                 )
                 insights = response.choices[0].message.content.split("\n")
                 for insight in insights:
