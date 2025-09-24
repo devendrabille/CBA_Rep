@@ -62,9 +62,9 @@ if uploaded_files:
             ]
             try:
                 response = client.chat.completions.create(
-                    deployment_id=st.secrets["OPENAI_DEPLOYMENT"],
                     messages=messages,
-                    max_tokens=300
+                    max_completion_tokens=16384,
+                    model=deployment
                 )
                 suggestions = response.choices[0].message.content.split("\n")
                 for suggestion in suggestions:
