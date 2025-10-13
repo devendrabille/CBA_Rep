@@ -71,7 +71,7 @@ def iqr_outliers_count(s: pd.Series):
     low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
     return int(((s < low) | (s > high)).sum())
 
-def ai_call(messages, max_tokens=600):
+def ai_call(messages, max_completion_tokens=16384):
     if client is None:
         return "Azure OpenAI client is not initialized."
     try:
@@ -79,7 +79,7 @@ def ai_call(messages, max_tokens=600):
             model=OPENAI_DEPLOYMENT_NAME,
             messages=messages,
             temperature=0.35,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_completion_tokens,
         )
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
@@ -135,7 +135,7 @@ def chat_with(thread_list, user_text, system_prompt, context_text):
     messages.extend({"role": m["role"], "content": m["content"]} for m in thread_list if m.get("tag") != "context")
     # Current user input
     messages.append({"role": "user", "content": user_text})
-    reply = ai_call(messages, max_tokens=700)
+    reply = ai_call(messages, max_completion_tokens=16384)
     if reply:
         thread_list.append({"role": "user", "content": user_text})
         thread_list.append({"role": "assistant", "content": reply})
@@ -290,7 +290,7 @@ for uploaded_file in uploaded_files:
                 {"role": "system", "content": "You are a data analyst. Generate 3 concise, actionable insights."},
                 {"role": "user", "content": compact_json(insight_context)}
             ]
-            txt = ai_call(msgs, max_tokens=450)
+            txt = ai_call(msgs, max_completion_tokens=16384)
             insight_cards = [line.strip("•- ").strip() for line in txt.split("\n") if line.strip()]
             for card in insight_cards:
                 st.info(card)
@@ -303,7 +303,7 @@ for uploaded_file in uploaded_files:
                 {"role": "system", "content": "You are a feature engineering expert. Provide 5 specific ideas with short rationale."},
                 {"role": "user", "content": compact_json(insight_context)}
             ]
-            fe_txt = ai_call(fe_msgs, max_tokens=450)
+            fe_txt = ai_call(fe_msgs, max_completion_tokens=16384)
             feat_ideas = [line.strip("•- ").strip() for line in fe_txt.split("\n") if line.strip()]
             for idea in feat_ideas:
                 st.success(idea)
