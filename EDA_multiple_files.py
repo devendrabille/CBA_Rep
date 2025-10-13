@@ -11,111 +11,195 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.metrics import classification_report, mean_squared_error, r2_score
 
+import os
+import io
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import streamlit as st
+from openai import AzureOpenAI
 
+# ---------------- Azure OpenAI Setup ----------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")  # e.g., https://your-resource-name.openai.azure.com
-OPENAI_DEPLOYMENT_NAME = os.getenv("OPENAI_DEPLOYMENT_NAME")  # e.g., gpt-4o-mini
-OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")
+OPENAI_DEPLOYMENT_NAME = os.getenv("OPENAI_DEPLOYMENT_NAME")  # e.g., gpt-4o-mini (DEPLOYMENT NAME)
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-10-21")  # GA version; override if needed
 
-# Construct full Azure OpenAI endpoint
-base_url = f"{OPENAI_ENDPOINT}/openai/deployments/{OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={OPENAI_API_VERSION}"
+client = None
+try:
+    if not OPENAI_API_KEY or not OPENAI_ENDPOINT or not OPENAI_DEPLOYMENT_NAME:
+        raise ValueError(
+            "Missing required env vars: OPENAI_API_KEY, OPENAI_ENDPOINT, OPENAI_DEPLOYMENT_NAME."
+        )
+    if not OPENAI_ENDPOINT.startswith("https://"):
+        raise ValueError("OPENAI_ENDPOINT must start with https://")
 
-# Initialize client
-client = OpenAI(
-    api_key=OPENAI_API_KEY,
-    base_url=base_url,
-    default_headers={"api-key": OPENAI_API_KEY}
-)
+    client = AzureOpenAI(
+        api_key=OPENAI_API_KEY,
+        azure_endpoint=OPENAI_ENDPOINT,
+        api_version=OPENAI_API_VERSION,
+    )
+except Exception as e:
+    st.error(f"Error initializing Azure OpenAI client: {e}")
 
-
-
-
-
+# ---------------- Streamlit UI ----------------
 st.title("Agentic EDA Tool with AI Insights & Model Training")
 st.write("Upload one or more CSV files to begin automated exploratory data analysis and interact with AI for deeper insights.")
 
 uploaded_files = st.file_uploader("Choose CSV files", type="csv", accept_multiple_files=True)
 
+# ---------------- Helper ----------------
+def _safe_numeric_describe(df: pd.DataFrame) -> pd.DataFrame:
+    try:
+        numeric_df = df.select_dtypes(include=["number"])
+        return numeric_df, numeric_df.describe()
+    except Exception as e:
+        st.error(f"Error during numeric summary: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+def _ai_call(messages, max_tokens=500) -> str:
+    """Minimal wrapper for AI calls with error handling."""
+    if client is None:
+        return "Azure OpenAI client is not initialized."
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_DEPLOYMENT_NAME,  # IMPORTANT: deployment name, not base model
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=0.4,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        st.error(f"Error calling OpenAI API: {e}")
+        return ""
+
+# ---------------- Main Logic ----------------
 if uploaded_files:
     for uploaded_file in uploaded_files:
         with st.expander(f"EDA & Modeling for {uploaded_file.name}", expanded=True):
-            df = pd.read_csv(uploaded_file)
+            # Robust CSV read
+            try:
+                df = pd.read_csv(uploaded_file, low_memory=False)
+            except Exception as e:
+                st.error(f"Error reading CSV '{uploaded_file.name}': {e}")
+                continue
 
             # --- BASIC EDA ---
             st.subheader("Data Preview")
-            st.dataframe(df.head())
+            try:
+                st.dataframe(df.head())
+            except Exception as e:
+                st.error(f"Error displaying data preview: {e}")
 
             st.subheader("Basic Information")
-            buffer = io.StringIO()
-            df.info(buf=buffer)
-            s = buffer.getvalue()
-            st.text(s)
+            try:
+                buffer = io.StringIO()
+                df.info(buf=buffer)
+                st.text(buffer.getvalue())
+            except Exception as e:
+                st.error(f"Error retrieving basic info: {e}")
 
             st.subheader("Missing Values")
-            missing_vals = df.isnull().sum()
-            st.write(missing_vals)
+            try:
+                missing_vals = df.isnull().sum()
+                st.write(missing_vals)
+            except Exception as e:
+                st.error(f"Error computing missing values: {e}")
+                missing_vals = pd.Series(dtype="int64")
 
+            # --- NUMERIC SUMMARY ---
             st.subheader("Summary Statistics (Numeric Columns Only)")
-            numeric_df = df.select_dtypes(include=['number'])
-            st.write(numeric_df.describe())
+            numeric_df, numeric_summary = _safe_numeric_describe(df)
+            try:
+                if numeric_df.empty:
+                    st.warning("No numeric columns found.")
+                else:
+                    st.write(numeric_summary)
+            except Exception as e:
+                st.error(f"Error showing numeric summary: {e}")
 
+            # --- CORRELATION MATRIX ---
             st.subheader("Correlation Matrix (Numeric Columns Only)")
             if not numeric_df.empty:
-                corr = numeric_df.corr()
-                fig, ax = plt.subplots()
-                sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
-                st.pyplot(fig)
+                try:
+                    corr = numeric_df.corr(numeric_only=True)
+                    fig, ax = plt.subplots()
+                    sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
+                    st.pyplot(fig)
+                except Exception as e:
+                    st.error(f"Error generating correlation heatmap: {e}")
 
             # --- OUTLIER DETECTION ---
             st.subheader("Outlier Detection (IQR Method)")
             outlier_summary = {}
-            for col in numeric_df.columns:
-                Q1 = numeric_df[col].quantile(0.25)
-                Q3 = numeric_df[col].quantile(0.75)
-                IQR = Q3 - Q1
-                outliers = numeric_df[(numeric_df[col] < Q1 - 1.5 * IQR) | (numeric_df[col] > Q3 + 1.5 * IQR)]
-                outlier_summary[col] = len(outliers)
-                fig, ax = plt.subplots()
-                sns.boxplot(x=numeric_df[col], ax=ax)
-                st.pyplot(fig)
+            if not numeric_df.empty:
+                try:
+                    for col in numeric_df.columns:
+                        Q1 = numeric_df[col].quantile(0.25)
+                        Q3 = numeric_df[col].quantile(0.75)
+                        IQR = Q3 - Q1
+                        outliers = numeric_df[(numeric_df[col] < Q1 - 1.5 * IQR) | (numeric_df[col] > Q3 + 1.5 * IQR)]
+                        outlier_summary[col] = len(outliers)
+
+                        fig, ax = plt.subplots()
+                        sns.boxplot(x=numeric_df[col], ax=ax)
+                        ax.set_title(f"Boxplot: {col} (outliers: {outlier_summary[col]})")
+                        st.pyplot(fig)
+                except Exception as e:
+                    st.error(f"Error during outlier detection: {e}")
             st.write("Outlier counts per column:", outlier_summary)
 
             # --- DATA QUALITY SCORE ---
             st.subheader("Data Quality Score")
-            total_cells = df.shape[0] * df.shape[1]
-            missing_ratio = missing_vals.sum() / total_cells
-            outlier_ratio = sum(outlier_summary.values()) / numeric_df.shape[0] if not numeric_df.empty else 0
-            quality_score = 100 - (missing_ratio * 50 + outlier_ratio * 50)
-            st.write(f"Estimated Data Quality Score: {quality_score:.2f}/100")
+            try:
+                total_cells = df.size
+                missing_ratio = (missing_vals.sum() / total_cells) if total_cells > 0 else 0.0
+                outlier_ratio = (sum(outlier_summary.values()) / numeric_df.size) if not numeric_df.empty else 0.0
+                quality_score = max(0.0, 100.0 - (missing_ratio * 50.0 + outlier_ratio * 50.0))
+                st.write(f"Estimated Data Quality Score: {quality_score:.2f}/100")
+            except Exception as e:
+                st.error(f"Error computing quality score: {e}")
 
             # --- CATEGORICAL ANALYSIS ---
             st.subheader("Categorical Feature Analysis")
-            categorical_df = df.select_dtypes(include=['object', 'category'])
-            for col in categorical_df.columns:
-                st.write(f"Value Counts for {col}:")
-                st.write(df[col].value_counts())
-                fig, ax = plt.subplots()
-                sns.countplot(x=col, data=df, ax=ax)
-                plt.xticks(rotation=45)
-                st.pyplot(fig)
+            try:
+                categorical_df = df.select_dtypes(include=["object", "category"])
+                if categorical_df.empty:
+                    st.info("No categorical columns found.")
+                else:
+                    for col in categorical_df.columns:
+                        st.write(f"Value Counts for {col}:")
+                        st.write(df[col].value_counts())
+
+                        fig, ax = plt.subplots()
+                        # Limit to top 30 categories for readability
+                        plot_df = df[col].value_counts().head(30)
+                        sns.barplot(x=plot_df.index.astype(str), y=plot_df.values, ax=ax)
+                        ax.set_xlabel(col)
+                        ax.set_ylabel("count")
+                        plt.xticks(rotation=45, ha="right")
+                        st.pyplot(fig)
+            except Exception as e:
+                st.error(f"Error in categorical analysis: {e}")
 
             # --- AI CHART EXPLANATION ---
             st.subheader("AI Chart Explanation")
-            chart_question = st.text_input(f"Ask AI to explain a chart or pattern in {uploaded_file.name}", key=f"chart_q_{uploaded_file.name}")
+            chart_question = st.text_input(
+                f"Ask AI to explain a chart or pattern in {uploaded_file.name}",
+                key=f"chart_q_{uploaded_file.name}"
+            )
             if st.button(f"Explain Chart for {uploaded_file.name}"):
-                chart_context = f"Numeric Summary: {numeric_df.describe().to_dict()}\nOutlier Summary: {outlier_summary}"
-                messages = [
-                    {"role": "system", "content": "You are a data analyst. Explain the chart and patterns in simple terms."},
-                    {"role": "user", "content": chart_context},
-                    {"role": "user", "content": chart_question}
-                ]
                 try:
-                    response = client.chat.completions.create(
-                        model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
-                        messages=messages,
-                        max_tokens=500
+                    chart_context = (
+                        f"Numeric Summary: {numeric_summary.to_dict() if not numeric_summary.empty else {}} "
+                        f"\nOutlier Summary: {outlier_summary}"
                     )
-                    reply = response.choices[0].message.content
+                    messages = [
+                        {"role": "system", "content": "You are a data analyst. Explain the chart and patterns in simple terms."},
+                        {"role": "user", "content": chart_context},
+                        {"role": "user", "content": chart_question or "Explain key patterns."}
+                    ]
+                    reply = _ai_call(messages, max_tokens=500)
                     st.write("### AI Chart Explanation")
                     st.write(reply)
                 except Exception as e:
@@ -123,18 +207,18 @@ if uploaded_files:
 
             # --- INSIGHT CARDS ---
             st.subheader("AI Insight Cards")
-            insight_context = f"Missing Values: {missing_vals.to_dict()}\nOutliers: {outlier_summary}\nNumeric Summary: {numeric_df.describe().to_dict()}"
-            messages = [
-                {"role": "system", "content": "You are a data analyst. Generate 3 key insights from the dataset."},
-                {"role": "user", "content": insight_context}
-            ]
             try:
-                response = client.chat.completions.create(
-                    model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
-                    messages=messages,
-                    max_tokens=500
+                insight_context = (
+                    f"Missing Values: {missing_vals.to_dict()} "
+                    f"\nOutliers: {outlier_summary} "
+                    f"\nNumeric Summary: {numeric_summary.to_dict() if not numeric_summary.empty else {}}"
                 )
-                insights = response.choices[0].message.content.split("\n")
+                messages = [
+                    {"role": "system", "content": "You are a data analyst. Generate 3 key insights from the dataset."},
+                    {"role": "user", "content": insight_context}
+                ]
+                insights_text = _ai_call(messages, max_tokens=500)
+                insights = [line for line in insights_text.split("\n") if line.strip()]
                 for insight in insights:
                     st.info(insight)
             except Exception as e:
@@ -142,22 +226,19 @@ if uploaded_files:
 
             # --- AUTO SUGGESTIONS ---
             st.subheader("Auto Suggestions for Fixes")
-            suggestion_context = f"Missing Values: {missing_vals.to_dict()}\nOutliers: {outlier_summary}"
-            messages = [
-                {"role": "system", "content": "You are a data scientist. Suggest preprocessing steps to clean the data."},
-                {"role": "user", "content": suggestion_context}
-            ]
             try:
-                response = client.chat.completions.create(
-                    model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
-                    messages=messages,
-                    max_tokens=500
-                )
-                suggestions = response.choices[0].message.content.split("\n")
+                suggestion_context = f"Missing Values: {missing_vals.to_dict()}\nOutliers: {outlier_summary}"
+                messages = [
+                    {"role": "system", "content": "You are a data scientist. Suggest preprocessing steps to clean the data."},
+                    {"role": "user", "content": suggestion_context}
+                ]
+                suggestions_text = _ai_call(messages, max_tokens=500)
+                suggestions = [line for line in suggestions_text.split("\n") if line.strip()]
                 for suggestion in suggestions:
                     st.warning(suggestion)
             except Exception as e:
                 st.error(f"Error calling OpenAI API: {e}")
+
 
             # --- MODEL TRAINING ---
             st.subheader("Model Training: Gradient Boosting")
