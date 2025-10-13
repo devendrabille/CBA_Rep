@@ -78,7 +78,6 @@ def ai_call(messages, max_completion_tokens=16384):
         resp = client.chat.completions.create(
             model=OPENAI_DEPLOYMENT_NAME,
             messages=messages,
-            temperature=0.35,
             max_completion_tokens=max_completion_tokens,
         )
         return (resp.choices[0].message.content or "").strip()
