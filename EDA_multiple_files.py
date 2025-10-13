@@ -96,7 +96,9 @@ if uploaded_files:
                     response = client.chat.completions.create(
                         model="gpt-5-nano-chatbot",
                         messages=messages,
-                        max_tokens=500
+                        max_tokens=16384,
+                        stop=None,
+                        stream=False
                     )
                     reply = response.choices[0].message.content
                     st.write("### AI Chart Explanation")
@@ -115,7 +117,9 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model="gpt-5-nano-chatbot",
                     messages=messages,
-                    max_tokens=300
+                    max_tokens=16384,
+                    stop=None,
+                    stream=False
                 )
                 insights = response.choices[0].message.content.split("\n")
                 for insight in insights:
@@ -134,7 +138,9 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model="gpt-5-nano-chatbot",
                     messages=messages,
-                    max_tokens=300
+                    max_tokens=16384,
+                    stop=None,
+                    stream=False
                 )
                 suggestions = response.choices[0].message.content.split("\n")
                 for suggestion in suggestions:
