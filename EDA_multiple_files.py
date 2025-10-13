@@ -66,7 +66,7 @@ def _ai_call(messages, max_completion_tokens=16384) -> str:
             model=OPENAI_DEPLOYMENT_NAME,  # IMPORTANT: deployment name, not base model
             messages=messages,
             max_completion_tokens=max_completion_tokens,
-            temperature=0.4,
+            
         )
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
