@@ -17,10 +17,17 @@ from sklearn.metrics import classification_report, mean_squared_error, r2_score
 
 # Initialize Azure OpenAI client
 
-client = AzureOpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    azure_endpoint=os.getenv("OPENAI_ENDPOINT"),
-    api_version=os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")
+
+# Initialize Azure-compatible OpenAI client
+client = OpenAI(
+    api_key=OPENAI_API_KEY,
+    base_url=f"{OPENAI_ENDPOINT}/openai/deployments",
+    default_headers={"api-key": OPENAI_API_KEY},
+    api_version=OPENAI_API_VERSION
 )
 
 
