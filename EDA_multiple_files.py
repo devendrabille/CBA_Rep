@@ -348,7 +348,7 @@ else:
             # Prefill from any “Discuss…” button above
             default_prompt = st.session_state.chat_seed.get(file_key, "")
             user_input = st.chat_input(
-                placeholder1=(default_prompt or "Ask about any diagram or insight…"),
+                #placeholder1=(default_prompt or "Ask about any diagram or insight…"),
                 key=f"chat_input_{file_key}",
                 max_chars=2000,
                 placeholder=(default_prompt or "What stands out in the EDA, and how should we preprocess/features?")
