@@ -94,7 +94,7 @@ if uploaded_files:
                     {"role": "user", "content": chart_question}
                 ]
                 try:
-                    response = client.chat.completions.create(
+                    response = openai.ChatCompletion.create(
                         model="gpt-5-nano-chatbot",
                         messages=messages,
                         max_tokens=16384,
@@ -115,7 +115,7 @@ if uploaded_files:
                 {"role": "user", "content": insight_context}
             ]
             try:
-                response = client.chat.completions.create(
+                response = openai.ChatCompletion.create(
                     model="gpt-5-nano-chatbot",
                     messages=messages,
                     max_tokens=16384,
@@ -136,7 +136,7 @@ if uploaded_files:
                 {"role": "user", "content": suggestion_context}
             ]
             try:
-                response = client.chat.completions.create(
+                response = openai.ChatCompletion.create(
                     model="gpt-5-nano-chatbot",
                     messages=messages,
                     max_tokens=16384,
