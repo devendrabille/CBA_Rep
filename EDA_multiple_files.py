@@ -73,7 +73,7 @@ def ensure_thread(file_key):
     if file_key not in st.session_state.threads:
         st.session_state.threads[file_key] = []
 
-def ai_call(messages, max_tokens=550):
+def ai_call(messages, max_completion_tokens=16384):
     """Generic AI call with error handling."""
     if client is None:
         return "Azure OpenAI client is not initialized."
@@ -81,8 +81,7 @@ def ai_call(messages, max_tokens=550):
         resp = client.chat.completions.create(
             model=OPENAI_DEPLOYMENT_NAME,
             messages=messages,
-            temperature=0.35,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_completion_tokens,
         )
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
@@ -134,7 +133,7 @@ def chat_about(file_key: str, user_text: str, eda_context: dict):
     # Current user input
     messages.append({"role": "user", "content": user_text})
 
-    reply = ai_call(messages, max_tokens=650)
+    reply = ai_call(messages, max_completion_tokens=16384=)
     if reply:
         # Update thread
         thread.append({"role": "user", "content": user_text})
@@ -295,7 +294,7 @@ else:
                     {"role": "system", "content": "You are a data analyst. Generate 3 concise, actionable insights."},
                     {"role": "user", "content": compact_json(insight_context)}
                 ]
-                insights_text = ai_call(insight_messages, max_tokens=500)
+                insights_text = ai_call(insight_messages, max_completion_tokens=16384)
                 insights = [line.strip("•- ").strip() for line in insights_text.split("\n") if line.strip()]
                 for insight in insights:
                     st.info(insight)
