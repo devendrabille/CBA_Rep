@@ -113,7 +113,7 @@ if uploaded_files:
                     response = client.chat.completions.create(
                         model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
                         messages=messages,
-                        max_completion_tokens=16384
+                        max_tokens=500
                     )
                     reply = response.choices[0].message.content
                     st.write("### AI Chart Explanation")
@@ -132,7 +132,7 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
                     messages=messages,
-                    max_completion_tokens=16384
+                    max_tokens=500
                 )
                 insights = response.choices[0].message.content.split("\n")
                 for insight in insights:
@@ -151,7 +151,7 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
                     messages=messages,
-                    max_completion_tokens=16384
+                    max_tokens=500
                 )
                 suggestions = response.choices[0].message.content.split("\n")
                 for suggestion in suggestions:
