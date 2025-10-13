@@ -12,23 +12,22 @@ from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegress
 from sklearn.metrics import classification_report, mean_squared_error, r2_score
 
 
-# Initialize OpenAI client
-
-
-# Initialize Azure OpenAI client
-
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")
+OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")  # e.g., https://your-resource-name.openai.azure.com
+OPENAI_DEPLOYMENT_NAME = os.getenv("OPENAI_DEPLOYMENT_NAME")  # e.g., gpt-4o-mini
 OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")
 
-# Initialize Azure-compatible OpenAI client
+# Construct full Azure OpenAI endpoint
+base_url = f"{OPENAI_ENDPOINT}/openai/deployments/{OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={OPENAI_API_VERSION}"
+
+# Initialize client
 client = OpenAI(
     api_key=OPENAI_API_KEY,
-    base_url=f"{OPENAI_ENDPOINT}/openai/deployments",
-    default_headers={"api-key": OPENAI_API_KEY},
-    api_version=OPENAI_API_VERSION
+    base_url=base_url,
+    default_headers={"api-key": OPENAI_API_KEY}
 )
+
+
 
 
 
