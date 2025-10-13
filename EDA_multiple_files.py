@@ -133,7 +133,7 @@ def chat_about(file_key: str, user_text: str, eda_context: dict):
     # Current user input
     messages.append({"role": "user", "content": user_text})
 
-    reply = ai_call(messages, max_completion_tokens=16384=)
+    reply = ai_call(messages, max_completion_tokens=16384)
     if reply:
         # Update thread
         thread.append({"role": "user", "content": user_text})
