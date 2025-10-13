@@ -11,8 +11,9 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.metrics import classification_report, mean_squared_error, r2_score
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+import openai
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
 
 st.title("Agentic EDA Tool with AI Insights & Model Training")
 st.write("Upload one or more CSV files to begin automated exploratory data analysis and interact with AI for deeper insights.")
