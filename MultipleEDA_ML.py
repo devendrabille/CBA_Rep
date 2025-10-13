@@ -1,7 +1,11 @@
 import streamlit as st
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import io
 import os
-from openai import AzureOpenAI
+from openai import OpenAI
+from fpdf import FPDF
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
@@ -10,16 +14,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from fpdf import FPDF
 
-deployment = "simplegptnano"
-
 # --- Azure OpenAI Client Setup ---
 client = AzureOpenAI(
     api_key=st.secrets["OPENAI_API_KEY"],
-    api_version="2024-12-01-preview",
+    api_version="2023-07-01-preview",
     azure_endpoint=st.secrets["OPENAI_ENDPOINT"]
 )
 
-# --- Streamlit UI ---
 st.title("Agentic EDA Tool with AI Insights & Model Training")
 st.write("Upload one or more CSV files to begin automated exploratory data analysis and interact with AI for deeper insights.")
 
@@ -30,28 +31,104 @@ if uploaded_files:
         with st.expander(f"EDA & Modeling for {uploaded_file.name}", expanded=True):
             df = pd.read_csv(uploaded_file)
 
+            # --- BASIC EDA ---
+            st.subheader("Data Preview")
+            st.dataframe(df.head())
+
+            st.subheader("Basic Information")
+            buffer = io.StringIO()
+            df.info(buf=buffer)
+            s = buffer.getvalue()
+            st.text(s)
+
+            st.subheader("Missing Values")
+            missing_vals = df.isnull().sum()
+            st.write(missing_vals)
+
+            st.subheader("Summary Statistics (Numeric Columns Only)")
+            numeric_df = df.select_dtypes(include=['number'])
+            st.write(numeric_df.describe())
+
+            st.subheader("Correlation Matrix (Numeric Columns Only)")
+            if not numeric_df.empty:
+                corr = numeric_df.corr()
+                fig, ax = plt.subplots()
+                sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
+                st.pyplot(fig)
+
+            # --- OUTLIER DETECTION ---
+            st.subheader("Outlier Detection (IQR Method)")
+            outlier_summary = {}
+            for col in numeric_df.columns:
+                Q1 = numeric_df[col].quantile(0.25)
+                Q3 = numeric_df[col].quantile(0.75)
+                IQR = Q3 - Q1
+                outliers = numeric_df[(numeric_df[col] < Q1 - 1.5 * IQR) | (numeric_df[col] > Q3 + 1.5 * IQR)]
+                outlier_summary[col] = len(outliers)
+                fig, ax = plt.subplots()
+                sns.boxplot(x=numeric_df[col], ax=ax)
+                st.pyplot(fig)
+            st.write("Outlier counts per column:", outlier_summary)
+
+            # --- DATA QUALITY SCORE ---
+            st.subheader("Data Quality Score")
+            total_cells = df.shape[0] * df.shape[1]
+            missing_ratio = missing_vals.sum() / total_cells
+            outlier_ratio = sum(outlier_summary.values()) / numeric_df.shape[0] if not numeric_df.empty else 0
+            quality_score = 100 - (missing_ratio * 50 + outlier_ratio * 50)
+            st.write(f"Estimated Data Quality Score: {quality_score:.2f}/100")
+
+            # --- CATEGORICAL ANALYSIS ---
+            st.subheader("Categorical Feature Analysis")
+            categorical_df = df.select_dtypes(include=['object', 'category'])
+            for col in categorical_df.columns:
+                st.write(f"Value Counts for {col}:")
+                st.write(df[col].value_counts())
+                fig, ax = plt.subplots()
+                sns.countplot(x=col, data=df, ax=ax)
+                plt.xticks(rotation=45)
+                st.pyplot(fig)
+
+            # --- AI CHART EXPLANATION ---
+            st.subheader("AI Chart Explanation")
+            chart_question = st.text_input(f"Ask AI to explain a chart or pattern in {uploaded_file.name}", key=f"chart_q_{uploaded_file.name}")
+            if st.button(f"Explain Chart for {uploaded_file.name}"):
+                chart_context = f"Numeric Summary: {numeric_df.describe().to_dict()}\nOutlier Summary: {outlier_summary}"
+                messages = [
+                    {"role": "system", "content": "An AI Assist to business and data analytics teams who would ask queries about the data as part of EDA and to provide excellent results and interpret the good patterns among data and good enough to suggest the fields for feature engineering. Not to answer any invalid questions and to prompt \"Try again with a valid data related context\"\n## To Avoid Harmful Content\n- You must not generate content that may be harmful to someone physically or emotionally even if a user requests or creates a condition to rationalize that harmful content.\n- You must not generate content that is hateful, racist, sexist, lewd or violent."},
+                    {"role": "user", "content": chart_context},
+                    {"role": "user", "content": chart_question}
+                ]
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=messages,
+                        max_tokens=500
+                    )
+                    reply = response.choices[0].message.content
+                    st.write("### AI Chart Explanation")
+                    st.write(reply)
+                except Exception as e:
+                    st.error(f"Error calling OpenAI API: {e}")
+
             # --- INSIGHT CARDS ---
             st.subheader("AI Insight Cards")
-            missing_vals = df.isnull().sum()
-            outlier_summary = df.describe().to_string()
-            numeric_df = df.select_dtypes(include='number')
-
             insight_context = f"Missing Values: {missing_vals.to_dict()}\nOutliers: {outlier_summary}\nNumeric Summary: {numeric_df.describe().to_dict()}"
             messages = [
-                {"role": "system", "content": "You are a data analyst. Generate 3 key insights from the dataset."},
+                {"role": "system", "content": "An AI Assist to business and data analytics teams who would ask queries about the data as part of EDA and to provide excellent results and interpret the good patterns among data and good enough to suggest the fields for feature engineering. Not to answer any invalid questions and to prompt \"Try again with a valid data related context\"\n## To Avoid Harmful Content\n- You must not generate content that may be harmful to someone physically or emotionally even if a user requests or creates a condition to rationalize that harmful content.\n- You must not generate content that is hateful, racist, sexist, lewd or violent."},
                 {"role": "user", "content": insight_context}
             ]
             try:
                 response = client.chat.completions.create(
+                    deployment_id=st.secrets["OPENAI_DEPLOYMENT"],
                     messages=messages,
-                    max_completion_tokens=16384,
-                    model=deployment
+                    max_tokens=300
                 )
                 insights = response.choices[0].message.content.split("\n")
                 for insight in insights:
                     st.info(insight)
             except Exception as e:
-                st.error(f"Error calling Azure OpenAI API: {e}")
+                st.error(f"Error calling OpenAI API: {e}")
 
             # --- AUTO SUGGESTIONS ---
             st.subheader("Auto Suggestions for Fixes")
@@ -62,6 +139,7 @@ if uploaded_files:
             ]
             try:
                 response = client.chat.completions.create(
+                    deployment_id=st.secrets["OPENAI_DEPLOYMENT"],
                     messages=messages,
                     max_completion_tokens=16384,
                     model=deployment
@@ -70,7 +148,7 @@ if uploaded_files:
                 for suggestion in suggestions:
                     st.warning(suggestion)
             except Exception as e:
-                st.error(f"Error calling Azure OpenAI API: {e}")
+                st.error(f"Error calling OpenAI API: {e}")
 
             # --- MODEL TRAINING ---
             st.subheader("Model Training: Gradient Boosting")
@@ -150,7 +228,7 @@ if uploaded_files:
                 pdf.add_page()
                 pdf.set_font("Arial", size=12)
                 pdf.cell(200, 10, txt=f"EDA Report - {uploaded_file.name}", ln=True, align='C')
-                pdf.multi_cell(0, 10, txt=f"Missing Values:\n{missing_vals.to_string()}\n\nOutliers:\n{outlier_summary}")
+                pdf.multi_cell(0, 10, txt=f"Missing Values:\n{missing_vals.to_string()}\n\nOutliers:\n{outlier_summary}\n\nData Quality Score: {quality_score:.2f}/100")
                 report_path = f"{uploaded_file.name}_eda_report.pdf"
                 pdf.output(report_path)
                 with open(report_path, "rb") as f:
