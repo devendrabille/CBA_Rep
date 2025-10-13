@@ -57,7 +57,7 @@ def _safe_numeric_describe(df: pd.DataFrame) -> pd.DataFrame:
         st.error(f"Error during numeric summary: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
-def _ai_call(messages, max_tokens=500) -> str:
+def _ai_call(messages, max_completion_tokens=16384) -> str:
     """Minimal wrapper for AI calls with error handling."""
     if client is None:
         return "Azure OpenAI client is not initialized."
@@ -65,7 +65,7 @@ def _ai_call(messages, max_tokens=500) -> str:
         resp = client.chat.completions.create(
             model=OPENAI_DEPLOYMENT_NAME,  # IMPORTANT: deployment name, not base model
             messages=messages,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_completion_tokens,
             temperature=0.4,
         )
         return (resp.choices[0].message.content or "").strip()
