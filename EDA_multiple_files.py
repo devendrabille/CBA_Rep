@@ -11,22 +11,18 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.metrics import classification_report, mean_squared_error, r2_score
 
-api_version = "2024-12-01-preview"
-model_name = "gpt-5-mini"
-deployment = "gpt-5-mini"
 
 # Initialize OpenAI client
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")
-API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")  # default version if not set
 
 # Initialize Azure OpenAI client
+
 client = AzureOpenAI(
-    api_key=OPENAI_API_KEY,
-    azure_endpoint=OPENAI_ENDPOINT,
-    api_version=API_VERSION,
+    api_key=os.getenv("OPENAI_API_KEY"),
+    azure_endpoint=os.getenv("OPENAI_ENDPOINT"),
+    api_version=os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")
 )
+
 
 
 st.title("Agentic EDA Tool with AI Insights & Model Training")
