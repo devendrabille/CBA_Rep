@@ -232,7 +232,7 @@ if uploaded_files:
                     {"role": "system", "content": "You are a data scientist. Suggest preprocessing steps to clean the data."},
                     {"role": "user", "content": suggestion_context}
                 ]
-                suggestions_text = _ai_call(messages, max_tokens=500)
+                suggestions_text = _ai_call(messages, max_completion_tokens=16384)
                 suggestions = [line for line in suggestions_text.split("\n") if line.strip()]
                 for suggestion in suggestions:
                     st.warning(suggestion)
