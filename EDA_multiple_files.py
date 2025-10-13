@@ -199,7 +199,7 @@ if uploaded_files:
                         {"role": "user", "content": chart_context},
                         {"role": "user", "content": chart_question or "Explain key patterns."}
                     ]
-                    reply = _ai_call(messages, max_tokens=500)
+                    reply = _ai_call(messages, max_completion_tokens=16384)
                     st.write("### AI Chart Explanation")
                     st.write(reply)
                 except Exception as e:
@@ -217,7 +217,7 @@ if uploaded_files:
                     {"role": "system", "content": "You are a data analyst. Generate 3 key insights from the dataset."},
                     {"role": "user", "content": insight_context}
                 ]
-                insights_text = _ai_call(messages, max_tokens=500)
+                insights_text = _ai_call(messages, max_completion_tokens=16384)
                 insights = [line for line in insights_text.split("\n") if line.strip()]
                 for insight in insights:
                     st.info(insight)
