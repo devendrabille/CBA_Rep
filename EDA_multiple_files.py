@@ -111,7 +111,7 @@ if uploaded_files:
                 ]
                 try:
                     response = client.chat.completions.create(
-                        model="gpt-5-mini",
+                        model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
                         messages=messages,
                         max_completion_tokens=16384
                     )
@@ -130,7 +130,7 @@ if uploaded_files:
             ]
             try:
                 response = client.chat.completions.create(
-                    model="gpt-5-mini",
+                    model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
                     messages=messages,
                     max_completion_tokens=16384
                 )
@@ -149,7 +149,7 @@ if uploaded_files:
             ]
             try:
                 response = client.chat.completions.create(
-                    model="gpt-5-mini",
+                    model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
                     messages=messages,
                     max_completion_tokens=16384
                 )
