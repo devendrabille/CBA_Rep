@@ -4,36 +4,29 @@ import pandas as pd
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-import io
+import io, re
 from datetime import datetime
 
 # -----------------------
 # Page config
 # -----------------------
-st.set_page_config(page_title="Agentic EDA (Batch Across Multiple Files)", layout="wide")
+st.set_page_config(page_title="Agentic EDA (All Files, Same UI)", layout="wide")
 
 # -----------------------
 # Session state keys
 # -----------------------
 SS = {
-    "datasets": "datasets",            # dict: name -> {"original": df, "active": df, "versions": []}
-    "active_name": "active_name",      # str: current dataset name
-}
-
-CHAT_KEYS = {
-    "Home": "chat_home",
-    "Multi-EDA Summary": "chat_summary",
-    "Box Plots": "chat_box",
-    "Correlation Matrix": "chat_corr",
-    "Bar Charts": "chat_bar",
-    "Line Charts": "chat_line",
-    "Scatter Plots": "chat_scatter",
-    "Bubble Charts": "chat_bubble",
+    "datasets": "datasets",   # dict: name -> {"original": df, "active": df, "versions": []}
 }
 
 # -----------------------
-# Data I/O
+# Utilities
 # -----------------------
+def keyify(*parts):
+    """Create a safe Streamlit key from parts (dataset + chart page)."""
+    s = "__".join(parts)
+    return re.sub(r"[^a-zA-Z0-9_]", "_", s)
+
 @st.cache_data(show_spinner=False)
 def read_file(uploaded_file) -> pd.DataFrame:
     """Read CSV/Parquet/Excel into a DataFrame."""
@@ -64,90 +57,44 @@ def ingest_files(files):
     if SS["datasets"] not in st.session_state:
         st.session_state[SS["datasets"]] = {}
     datasets = st.session_state[SS["datasets"]]
-
-    added_names = []
     for f in files:
         try:
             df = read_file(f)
-            base = f.name
-            name = _ensure_unique_name(datasets.keys(), base)
-            datasets[name] = {
-                "original": df.copy(),
-                "active": df.copy(),
-                "versions": []  # list of dicts: {'name', 'df', 'diff'}
-            }
-            added_names.append(name)
+            name = _ensure_unique_name(datasets.keys(), f.name)
+            datasets[name] = {"original": df.copy(), "active": df.copy(), "versions": []}
         except Exception as e:
             st.sidebar.error(f"Failed to read {f.name}: {e}")
 
-    # Set active dataset if none selected
-    if added_names and not st.session_state.get(SS["active_name"]):
-        st.session_state[SS["active_name"]] = added_names[0]
-
-def get_active_df() -> pd.DataFrame:
+def get_df(dataset_name) -> pd.DataFrame:
     datasets = st.session_state.get(SS["datasets"], {})
-    name = st.session_state.get(SS["active_name"])
-    if not name or name not in datasets:
-        return pd.DataFrame()
-    return datasets[name]["active"]
+    if dataset_name in datasets:
+        return datasets[dataset_name]["active"]
+    return pd.DataFrame()
 
-def set_active_df(new_df: pd.DataFrame, version_name=None, diff=None):
+def set_df(dataset_name, df, version_name=None, diff=None):
     datasets = st.session_state.get(SS["datasets"], {})
-    name = st.session_state.get(SS["active_name"])
-    if not name or name not in datasets:
-        return
-    datasets[name]["active"] = new_df
-    if version_name:
-        datasets[name]["versions"].append({"name": version_name, "df": new_df.copy(), "diff": diff})
+    if dataset_name in datasets:
+        datasets[dataset_name]["active"] = df
+        if version_name:
+            datasets[dataset_name]["versions"].append(
+                {"name": version_name, "df": df.copy(), "diff": diff}
+            )
 
-def set_all_active_df(drop_cols, base_version_name: str):
-    """Apply feature deletion across all datasets (only dropping columns that exist)."""
+def undo_last_version(dataset_name):
     datasets = st.session_state.get(SS["datasets"], {})
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    for name, item in datasets.items():
-        df = item["active"]
-        cols_to_drop = [c for c in drop_cols if c in df.columns]
-        new_df = df.drop(columns=cols_to_drop) if cols_to_drop else df.copy()
-        item["active"] = new_df
-        item["versions"].append({
-            "name": f"{base_version_name}__{name}__{ts}",
-            "df": new_df.copy(),
-            "diff": {"dropped_columns": cols_to_drop}
-        })
-
-def undo_last_version(active_only=True):
-    datasets = st.session_state.get(SS["datasets"], {})
-    if active_only:
-        name = st.session_state.get(SS["active_name"])
-        if not name or name not in datasets:
-            return "No active dataset."
-        versions = datasets[name]["versions"]
-        if not versions:
-            datasets[name]["active"] = datasets[name]["original"].copy()
-            return "No versions to undo. Reverted to original."
-        versions.pop()
-        if versions:
-            datasets[name]["active"] = versions[-1]["df"].copy()
-            return "Reverted to previous version (active dataset)."
-        else:
-            datasets[name]["active"] = datasets[name]["original"].copy()
-            return "Reverted to original (active dataset)."
+    if dataset_name not in datasets:
+        return "Dataset not found."
+    versions = datasets[dataset_name]["versions"]
+    if not versions:
+        datasets[dataset_name]["active"] = datasets[dataset_name]["original"].copy()
+        return "No versions to undo. Reverted to original."
+    versions.pop()
+    if versions:
+        datasets[dataset_name]["active"] = versions[-1]["df"].copy()
+        return "Reverted to previous version."
     else:
-        msg = []
-        for name, item in datasets.items():
-            versions = item["versions"]
-            if not versions:
-                item["active"] = item["original"].copy()
-                msg.append(f"{name}: reverted to original")
-            else:
-                versions.pop()
-                if versions:
-                    item["active"] = versions[-1]["df"].copy()
-                    msg.append(f"{name}: reverted to previous version")
-                else:
-                    item["active"] = item["original"].copy()
-                    msg.append(f"{name}: reverted to original")
-        return " ; ".join(msg)
+        datasets[dataset_name]["active"] = datasets[dataset_name]["original"].copy()
+        return "Reverted to original."
 
 def export_df(df: pd.DataFrame, fmt: str = "csv") -> bytes:
     if fmt == "csv":
@@ -160,13 +107,8 @@ def export_df(df: pd.DataFrame, fmt: str = "csv") -> bytes:
         raise ValueError("Unsupported export format.")
 
 # -----------------------
-# Helpers: layout & utilities
+# Column helpers
 # -----------------------
-def three_pane(title: str):
-    st.title(title)
-    left, mid, right = st.columns([1.1, 1.8, 1.1])
-    return left, mid, right
-
 def numeric_columns(df: pd.DataFrame):
     return df.select_dtypes(include=[np.number]).columns.tolist()
 
@@ -175,18 +117,16 @@ def categorical_columns(df: pd.DataFrame):
 
 def datetime_columns(df: pd.DataFrame):
     dt_cols = []
-    # include native datetime dtypes
     for col in df.columns:
         if np.issubdtype(df[col].dtype, np.datetime64):
             dt_cols.append(col)
-    # attempt to parse object columns
     for col in df.select_dtypes(include=["object"]).columns:
         try:
             pd.to_datetime(df[col], errors="raise")
             dt_cols.append(col)
         except Exception:
             pass
-    return list(dict.fromkeys(dt_cols))  # de-duplicate preserving order
+    return list(dict.fromkeys(dt_cols))
 
 def ensure_datetime(series: pd.Series):
     if np.issubdtype(series.dtype, np.datetime64):
@@ -194,28 +134,21 @@ def ensure_datetime(series: pd.Series):
     try:
         return pd.to_datetime(series)
     except Exception:
-        return series  # fallback; caller should handle
-
-def iterate_datasets(render_fn, **kwargs):
-    """Render a chart/function for ALL datasets as tabs."""
-    datasets = st.session_state.get(SS["datasets"], {})
-    if not datasets:
-        st.info("Upload datasets to run batch EDA.")
-        return
-    names = sorted(datasets.keys())
-    tabs = st.tabs(names)
-    for tab, name in zip(tabs, names):
-        with tab:
-            df = datasets[name]["active"]
-            st.markdown(f"**Dataset:** `{name}`  |  Shape: {df.shape[0]} × {df.shape[1]}")
-            render_fn(df, dataset_name=name, **kwargs)
+        return series
 
 # -----------------------
-# Left pane: chat (stubbed LLM)
+# Layout helper
+# -----------------------
+def three_pane(title: str):
+    st.title(title)
+    left, mid, right = st.columns([1.1, 1.8, 1.1])
+    return left, mid, right
+
+# -----------------------
+# Chat panel (stubbed; wire Azure OpenAI later)
 # -----------------------
 def llm_call(system_prompt: str, messages: list) -> str:
-    # Replace with Azure OpenAI/GPT.nano integration
-    return "🔎 (Stub) I would explain the chart based on selected controls and the current dataset(s)."
+    return "🔎 (Stub) I would explain this chart based on the controls and dataset context."
 
 def chat_panel(state_key: str, header: str, system_prompt: str = None):
     st.subheader(header)
@@ -223,7 +156,7 @@ def chat_panel(state_key: str, header: str, system_prompt: str = None):
     for m in msgs:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
-    user_input = st.chat_input("Ask about this chart…")
+    user_input = st.chat_input("Ask about the chart…")
     if user_input:
         msgs.append({"role": "user", "content": user_input})
         response = llm_call(system_prompt or "", msgs)
@@ -235,129 +168,108 @@ def chat_panel(state_key: str, header: str, system_prompt: str = None):
             st.session_state[state_key] = []
             st.experimental_rerun()
     with cols_btn[1]:
-        st.caption("Chat is scoped to this page (chart type).")
+        st.caption("Chat is scoped to this dataset & chart.")
 
 # -----------------------
-# Right pane: data summary + deletion/export (Active or All)
+# Right pane: data summary + feature deletion/export
 # -----------------------
 def data_summary_panel(df: pd.DataFrame):
-    st.subheader("📚 Total Data Understanding (Active dataset)")
+    st.subheader("📚 Data Understanding")
     if df.empty:
-        st.info("No data loaded yet.")
+        st.info("Empty dataset.")
         return
     st.write(f"**Rows:** {df.shape[0]} **Columns:** {df.shape[1]}")
-    st.markdown("**Column types:**")
+    st.markdown("**Types:**")
     st.write(df.dtypes.astype(str))
     st.markdown("**Missing values (%):**")
     st.write((df.isna().mean() * 100).round(2))
     with st.expander("Preview (top 30 rows)"):
         st.dataframe(df.head(30), use_container_width=True)
 
-def feature_delete_panel():
-    st.subheader("🧹 Delete Features & Export New File")
-    datasets = st.session_state.get(SS["datasets"], {})
-    active_df = get_active_df()
-    if not datasets or active_df.empty:
-        st.info("Upload data to manage features.")
+def feature_delete_panel(dataset_name: str):
+    st.subheader("🧹 Delete Features & Export")
+    df = get_df(dataset_name)
+    if df.empty:
+        st.info("No data to manage.")
         return
 
-    scope = st.radio("Apply deletion to", options=["Active dataset", "All datasets"], horizontal=True)
-    df_for_options = active_df if scope == "Active dataset" else active_df  # use active to list columns
-    drop_cols = st.multiselect("Select features to delete", options=list(df_for_options.columns), default=[])
+    drop_cols = st.multiselect("Select features to delete", options=list(df.columns), default=[])
     if drop_cols:
-        st.caption(f"Will drop {len(drop_cols)} column(s): {drop_cols}")
+        st.caption(f"Dropping {len(drop_cols)} column(s): {drop_cols}")
 
-    version_name = st.text_input("Version name base", value=f"features_dropped_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    apply = st.button("Apply deletion")
-    if apply:
-        if scope == "Active dataset":
-            new_df = active_df.drop(columns=drop_cols) if drop_cols else active_df.copy()
+    version_name = st.text_input("Version name", value=f"{dataset_name}__drop__{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    cols = st.columns([1, 1, 1])
+    with cols[0]:
+        if st.button("Apply deletion", key=keyify(dataset_name, "apply_delete")):
+            new_df = df.drop(columns=drop_cols) if drop_cols else df.copy()
             diff = {"dropped_columns": drop_cols}
-            set_active_df(new_df, version_name=version_name, diff=diff)
-            st.success(f"Applied to Active dataset → {new_df.shape[0]} rows × {new_df.shape[1]} columns")
-        else:
-            set_all_active_df(drop_cols, base_version_name=version_name)
-            st.success("Applied to ALL datasets (columns dropped where present).")
+            set_df(dataset_name, new_df, version_name=version_name, diff=diff)
+            st.success(f"Applied to **{dataset_name}** → {new_df.shape[0]} × {new_df.shape[1]}")
 
-    st.markdown("---")
-    export_target = st.radio("Export", options=["Active dataset", "All datasets"], horizontal=True)
-    export_fmt = st.selectbox("Export format", ["csv", "parquet"])
-    file_name = st.text_input("Export file name (base, without extension)", value="cleaned_dataset")
-
-    if export_target == "Active dataset":
-        if st.button("Generate downloadable file (Active)"):
-            out = export_df(get_active_df(), fmt=export_fmt)
-            st.download_button(
-                label=f"Download {export_fmt.upper()} (Active)",
-                data=out,
-                file_name=f"{file_name}.{export_fmt}",
-                mime="text/csv" if export_fmt == "csv" else "application/octet-stream",
-                use_container_width=True,
-            )
-    else:
-        st.info("Download each dataset below:")
-        for name, item in datasets.items():
-            out = export_df(item["active"], fmt=export_fmt)
-            st.download_button(
-                label=f"⬇️ {name}",
-                data=out,
-                file_name=f"{file_name}__{name}.{export_fmt}",
-                mime="text/csv" if export_fmt == "csv" else "application/octet-stream",
-                use_container_width=True,
-                key=f"dl_{name}_{export_fmt}"
-            )
-
-    st.markdown("---")
-    undo_target = st.radio("Undo scope", options=["Active dataset", "All datasets"], horizontal=True)
-    if st.button("Undo last version change"):
-        msg = undo_last_version(active_only=(undo_target == "Active dataset"))
-        if "Reverted" in msg:
+    with cols[1]:
+        if st.button("Undo last change", key=keyify(dataset_name, "undo")):
+            msg = undo_last_version(dataset_name)
             st.warning(msg)
-        else:
-            st.info(msg)
+
+    with cols[2]:
+        if st.button("Reset to original", key=keyify(dataset_name, "reset")):
+            datasets = st.session_state.get(SS["datasets"], {})
+            if dataset_name in datasets:
+                datasets[dataset_name]["active"] = datasets[dataset_name]["original"].copy()
+                datasets[dataset_name]["versions"].clear()
+                st.warning("Reset to original.")
+
+    st.markdown("---")
+    export_fmt = st.selectbox("Export format", ["csv", "parquet"], key=keyify(dataset_name, "export_fmt"))
+    file_name = st.text_input("Export file name (without extension)", value=f"{dataset_name}__cleaned", key=keyify(dataset_name, "export_name"))
+    out = export_df(get_df(dataset_name), fmt=export_fmt)
+    st.download_button(
+        label=f"⬇️ Download {export_fmt.upper()}",
+        data=out,
+        file_name=f"{file_name}.{export_fmt}",
+        mime="text/csv" if export_fmt == "csv" else "application/octet-stream",
+        use_container_width=True,
+        key=keyify(dataset_name, "download_btn", export_fmt)
+    )
 
 # -----------------------
-# Chart renderers (middle pane)
+# Chart renderers
 # -----------------------
-def render_boxplots(df: pd.DataFrame, groupby: str | None, dataset_name: str = ""):
+def render_boxplots(df: pd.DataFrame, groupby: str | None):
     nums = numeric_columns(df)
     if not nums:
-        st.info("No numeric columns available for box plots.")
+        st.info("No numeric columns for box plots.")
         return
     for col in nums:
         fig, ax = plt.subplots(figsize=(6, 4))
         if groupby and groupby in df.columns:
             sns.boxplot(x=df[groupby], y=df[col], ax=ax)
-            ax.set_title(f"{dataset_name} – {col} by {groupby}")
-            ax.set_xlabel(groupby)
-            ax.set_ylabel(col)
+            ax.set_title(f"{col} by {groupby}")
+            ax.set_xlabel(groupby); ax.set_ylabel(col)
         else:
             sns.boxplot(y=df[col], ax=ax)
-            ax.set_title(f"{dataset_name} – {col} distribution")
+            ax.set_title(f"{col} distribution")
             ax.set_ylabel(col)
         st.pyplot(fig, clear_figure=True)
 
-def render_corr_matrix(df: pd.DataFrame, method: str = "pearson", mask_upper: bool = True, annot: bool = False, dataset_name: str = ""):
+def render_corr_matrix(df: pd.DataFrame, method: str = "pearson", mask_upper: bool = True, annot: bool = False):
     nums = numeric_columns(df)
     if len(nums) < 2:
-        st.info("Need at least 2 numeric columns for correlation.")
+        st.info("Need ≥ 2 numeric columns for correlation.")
         return
     corr = df[nums].corr(method=method)
     fig, ax = plt.subplots(figsize=(7, 6))
     mask = np.triu(np.ones_like(corr, dtype=bool)) if mask_upper else None
     sns.heatmap(corr, mask=mask, cmap="coolwarm", center=0, annot=annot, fmt=".2f", ax=ax)
-    ax.set_title(f"{dataset_name} – Correlation Matrix ({method})")
+    ax.set_title(f"Correlation ({method})")
     st.pyplot(fig, clear_figure=True)
 
-def render_bar_chart(df: pd.DataFrame, x_cat: str, y_num: str | None, agg: str, hue: str | None, top_n: int, sort_desc: bool, dataset_name: str = ""):
-    if x_cat is None or x_cat not in df.columns:
-        st.info(f"[{dataset_name}] Select a categorical column for X (not found).")
+def render_bar_chart(df: pd.DataFrame, x_cat: str, y_num: str | None, agg: str, hue: str | None, top_n: int, sort_desc: bool):
+    if x_cat not in df.columns:
+        st.info("Pick a valid categorical column for X.")
         return
     temp = df.copy()
-    if y_num:
-        if y_num not in temp.columns:
-            st.info(f"[{dataset_name}] Y column '{y_num}' not found.")
-            return
+    if y_num and y_num in temp.columns:
         grp_cols = [x_cat] + ([hue] if hue and hue in temp.columns else [])
         aggfunc = {"sum": "sum", "mean": "mean", "count": "count"}[agg]
         g = temp.groupby(grp_cols, dropna=False)[y_num].agg(aggfunc).reset_index(name="value")
@@ -365,7 +277,6 @@ def render_bar_chart(df: pd.DataFrame, x_cat: str, y_num: str | None, agg: str, 
         grp_cols = [x_cat] + ([hue] if hue and hue in temp.columns else [])
         g = temp.groupby(grp_cols, dropna=False).size().reset_index(name="value")
 
-    # Order & top N
     if sort_desc:
         g = g.sort_values("value", ascending=False)
     if top_n and top_n > 0 and x_cat in g.columns:
@@ -379,25 +290,19 @@ def render_bar_chart(df: pd.DataFrame, x_cat: str, y_num: str | None, agg: str, 
         sns.barplot(data=g, x=x_cat, y="value", ax=ax)
     ax.set_xlabel(x_cat)
     ax.set_ylabel(f"{agg}({y_num})" if y_num else "count")
-    ax.set_title(f"{dataset_name} – Bar Chart")
+    ax.set_title("Bar Chart")
     plt.xticks(rotation=30, ha="right")
     st.pyplot(fig, clear_figure=True)
 
-def render_line_chart(df: pd.DataFrame, time_col: str, y_col: str, freq: str, agg: str, groupby: str | None, dataset_name: str = ""):
-    if not time_col or not y_col:
-        st.info(f"[{dataset_name}] Select a time column and a numeric Y column.")
-        return
+def render_line_chart(df: pd.DataFrame, time_col: str, y_col: str, freq: str, agg: str, groupby: str | None):
     if time_col not in df.columns or y_col not in df.columns:
-        st.info(f"[{dataset_name}] Columns not found.")
+        st.info("Select a valid time column and numeric Y.")
         return
-
     temp = df.copy()
     temp[time_col] = ensure_datetime(temp[time_col])
     if not np.issubdtype(temp[time_col].dtype, np.datetime64):
-        st.warning(f"[{dataset_name}] '{time_col}' could not be parsed as datetime.")
+        st.warning(f"Column '{time_col}' could not be parsed as datetime.")
         return
-
-    # Resample / aggregate
     if groupby and groupby in temp.columns:
         grouped = temp.set_index(time_col).groupby(groupby)[y_col]
         pieces = []
@@ -406,8 +311,7 @@ def render_line_chart(df: pd.DataFrame, time_col: str, y_col: str, freq: str, ag
                 res = getattr(s.resample(freq), agg)()
             except Exception:
                 res = s.resample(freq).mean()
-            res = res.reset_index().assign(**{groupby: k})
-            pieces.append(res)
+            pieces.append(res.reset_index().assign(**{groupby: k}))
         agg_df = pd.concat(pieces, ignore_index=True)
     else:
         try:
@@ -420,36 +324,30 @@ def render_line_chart(df: pd.DataFrame, time_col: str, y_col: str, freq: str, ag
         sns.lineplot(data=agg_df, x=time_col, y=y_col, hue=groupby, ax=ax, marker="o")
     else:
         sns.lineplot(data=agg_df, x=time_col, y=y_col, ax=ax, marker="o")
-    ax.set_title(f"{dataset_name} – Line Chart ({agg} per {freq})")
-    ax.set_xlabel(time_col)
-    ax.set_ylabel(y_col)
+    ax.set_title(f"Line Chart ({agg} per {freq})")
+    ax.set_xlabel(time_col); ax.set_ylabel(y_col)
     st.pyplot(fig, clear_figure=True)
 
-def render_scatter(df: pd.DataFrame, x: str, y: str, hue: str | None, sample_n: int, alpha: float, dataset_name: str = ""):
+def render_scatter(df: pd.DataFrame, x: str, y: str, hue: str | None, sample_n: int, alpha: float):
     if x not in df.columns or y not in df.columns:
-        st.info(f"[{dataset_name}] X/Y columns not found.")
+        st.info("Select numeric columns for X and Y.")
         return
     temp = df[[x, y] + ([hue] if hue and hue in df.columns else [])].dropna().copy()
     if sample_n and len(temp) > sample_n:
         temp = temp.sample(sample_n, random_state=42)
     fig, ax = plt.subplots(figsize=(7, 5))
     sns.scatterplot(data=temp, x=x, y=y, hue=(hue if hue and hue in temp.columns else None), alpha=alpha, ax=ax)
-    ax.set_title(f"{dataset_name} – Scatter Plot")
+    ax.set_title("Scatter Plot")
     st.pyplot(fig, clear_figure=True)
 
-def render_bubble(df: pd.DataFrame, x: str, y: str, size_col: str, hue: str | None, sample_n: int, alpha: float, dataset_name: str = ""):
+def render_bubble(df: pd.DataFrame, x: str, y: str, size_col: str, hue: str | None, sample_n: int, alpha: float):
     if x not in df.columns or y not in df.columns or size_col not in df.columns:
-        st.info(f"[{dataset_name}] X/Y/Size columns not found.")
+        st.info("Select numeric columns for X, Y, and Size.")
         return
     temp = df[[x, y, size_col] + ([hue] if hue and hue in df.columns else [])].dropna().copy()
-    # Normalize size for visibility
     s = temp[size_col].astype(float)
     s_min, s_max = (np.percentile(s, 5), np.percentile(s, 95)) if len(s) > 20 else (s.min(), s.max())
-    if s_max == s_min:
-        sizes = np.full_like(s, 200, dtype=float)
-    else:
-        sizes = 100 + 900 * (np.clip(s, s_min, s_max) - s_min) / (s_max - s_min)
-
+    sizes = np.full_like(s, 200, dtype=float) if s_max == s_min else 100 + 900 * (np.clip(s, s_min, s_max) - s_min) / (s_max - s_min)
     temp["_size"] = sizes
     if sample_n and len(temp) > sample_n:
         temp = temp.sample(sample_n, random_state=42)
@@ -459,57 +357,13 @@ def render_bubble(df: pd.DataFrame, x: str, y: str, size_col: str, hue: str | No
         hue=(hue if hue and hue in temp.columns else None),
         alpha=alpha, ax=ax, legend=True
     )
-    ax.set_title(f"{dataset_name} – Bubble Chart")
+    ax.set_title("Bubble Chart")
     st.pyplot(fig, clear_figure=True)
 
 # -----------------------
-# Multi‑EDA Summary renderer (per dataset)
+# Sidebar: uploads + tips
 # -----------------------
-def render_eda_summary(df: pd.DataFrame, dataset_name: str = ""):
-    st.markdown(f"### 📄 {dataset_name} – EDA Summary")
-    if df.empty:
-        st.info("Empty dataset.")
-        return
-    # Shape & types
-    st.write(f"**Shape:** {df.shape[0]} rows × {df.shape[1]} columns")
-    st.write("**Types:**")
-    st.write(df.dtypes.astype(str))
-
-    # Missingness
-    st.write("**Missing values (%):**")
-    st.write((df.isna().mean() * 100).round(2))
-
-    # Numeric summary
-    nums = numeric_columns(df)
-    if nums:
-        st.write("**Numeric summary (describe):**")
-        st.dataframe(df[nums].describe().T, use_container_width=True)
-    else:
-        st.info("No numeric columns found.")
-
-    # Top categories
-    cats = categorical_columns(df)
-    if cats:
-        st.write("**Top category levels (first 3 columns):**")
-        for col in cats[:3]:
-            vc = df[col].value_counts(dropna=False).head(10)
-            st.write(f"- {col}")
-            st.dataframe(vc, use_container_width=True)
-    else:
-        st.info("No categorical columns found.")
-
-    # Correlation heatmap
-    st.write("**Correlation (Pearson):**")
-    render_corr_matrix(df, method="pearson", mask_upper=True, annot=False, dataset_name=dataset_name)
-
-    # Preview
-    with st.expander("Preview (top 30 rows)"):
-        st.dataframe(df.head(30), use_container_width=True)
-
-# -----------------------
-# Sidebar: data source & navigation
-# -----------------------
-st.sidebar.title("📂 Data Sources")
+st.sidebar.title("📂 Upload Datasets")
 uploads = st.sidebar.file_uploader(
     "Upload multiple CSV / Parquet / Excel files",
     type=["csv", "parquet", "xlsx", "xls"],
@@ -518,258 +372,246 @@ uploads = st.sidebar.file_uploader(
 if uploads:
     ingest_files(uploads)
 
-# Dataset selector
 datasets = st.session_state.get(SS["datasets"], {})
-if datasets:
-    names = sorted(datasets.keys())
-    default_idx = names.index(st.session_state.get(SS["active_name"], names[0])) if st.session_state.get(SS["active_name"]) in names else 0
-    active_choice = st.sidebar.selectbox("Active dataset", names, index=default_idx)
-    st.session_state[SS["active_name"]] = active_choice
-    # Shapes overview
-    with st.sidebar.expander("Datasets & Shapes"):
-        for n in names:
-            df = datasets[n]["active"]
-            st.write(f"- **{n}**: {df.shape[0]} × {df.shape[1]}")
+if not datasets:
+    st.sidebar.info("Upload files to begin. Parquet requires `pyarrow`; Excel requires `openpyxl`.")
+
+with st.sidebar.expander("Help / Troubleshooting"):
+    st.write("- If charts don't update after deletion, use **Rerun** (↻ in Streamlit menu) or change a control.")
+    st.write("- For large files, use sampling controls on Scatter/Bubble.")
+    st.write("- Clear cache via **Settings → Clear cache** if data seems stale.")
+
+# -----------------------
+# Main: tabs per dataset
+# -----------------------
+if not datasets:
+    st.info("No datasets loaded yet. Upload multiple files from the sidebar.")
 else:
-    st.sidebar.info("Upload one or more files to begin.")
+    dataset_names = sorted(datasets.keys())
+    tabs = st.tabs(dataset_names)
 
-st.sidebar.markdown("---")
-page = st.sidebar.radio(
-    "Navigate pages",
-    options=[
-        "Home",
-        "Multi-EDA Summary",       # NEW: runs EDA on all datasets
-        "Box Plots",
-        "Correlation Matrix",
-        "Bar Charts",
-        "Line Charts",
-        "Scatter Plots",
-        "Bubble Charts",
-    ]
-)
-st.sidebar.markdown("---")
-st.sidebar.info("Layout:\n- Left: Chart understanding chat\n- Middle: charts & controls\n- Right: data understanding + feature deletion/export")
+    for tab, dname in zip(tabs, dataset_names):
+        with tab:
+            df = get_df(dname)
+            st.markdown(f"### 📁 Dataset: **{dname}**  |  Shape: `{df.shape[0]} × {df.shape[1]}`")
 
-# -----------------------
-# Pages
-# -----------------------
-if page == "Home":
-    left, mid, right = three_pane("🏠 Home")
-    df = get_active_df()
-    with left:
-        chat_panel(CHAT_KEYS["Home"], header="🧠 General EDA Chat", system_prompt="General EDA Q&A about the active dataset.")
-    with mid:
-        st.subheader("Active Dataset Overview")
-        if df.empty:
-            st.info("Upload dataset(s) using the sidebar.")
-        else:
-            st.success(f"Active dataset: {df.shape[0]} rows × {df.shape[1]} columns")
-            st.dataframe(df.head(50), use_container_width=True)
-    with right:
-        data_summary_panel(df)
-        st.divider()
-        feature_delete_panel()
+            # Sub-tabs per chart page
+            chart_tabs = st.tabs([
+                "Overview",
+                "Box Plots",
+                "Correlation Matrix",
+                "Bar Charts",
+                "Line Charts",
+                "Scatter Plots",
+                "Bubble Charts",
+            ])
 
-elif page == "Multi-EDA Summary":
-    left, mid, right = three_pane("🧪 Multi‑EDA Summary (All Uploaded Datasets)")
-    with left:
-        chat_panel(CHAT_KEYS["Multi-EDA Summary"], header="🧠 EDA Summary Chat", system_prompt="Summarize key insights across all datasets.")
-    with mid:
-        st.subheader("📊 Batch EDA")
-        if not datasets:
-            st.info("Upload datasets to run batch EDA.")
-        else:
-            iterate_datasets(render_eda_summary)
-    with right:
-        # Show the active dataset's detail + bulk delete/export
-        df = get_active_df()
-        data_summary_panel(df)
-        st.divider()
-        feature_delete_panel()
-
-elif page == "Box Plots":
-    left, mid, right = three_pane("📦 Box Plots")
-    df = get_active_df()
-    with left:
-        chat_panel(CHAT_KEYS["Box Plots"], header="🧠 Box Plot Chat", system_prompt="Explain outliers (IQR), skewness, and group comparisons.")
-    with mid:
-        st.subheader("🎛️ Controls")
-        run_mode = st.radio("Run on", ["Active dataset", "All datasets"], horizontal=True)
-        if not datasets or df.empty:
-            st.info("Upload data on Home page.")
-        else:
-            cats = categorical_columns(df)
-            groupby = st.selectbox("Group by (optional)", options=["— None —"] + cats)
-            groupby = None if groupby == "— None —" else groupby
-            st.divider()
-            if run_mode == "Active dataset":
-                render_boxplots(df, groupby=groupby, dataset_name=st.session_state[SS["active_name"]])
-            else:
-                iterate_datasets(render_boxplots, groupby=groupby)
-    with right:
-        data_summary_panel(df)
-        st.divider()
-        feature_delete_panel()
-
-elif page == "Correlation Matrix":
-    left, mid, right = three_pane("🧩 Correlation Matrix")
-    df = get_active_df()
-    with left:
-        chat_panel(CHAT_KEYS["Correlation Matrix"], header="🧠 Correlation Chat", system_prompt="Discuss correlations and multicollinearity.")
-    with mid:
-        st.subheader("🎛️ Controls")
-        run_mode = st.radio("Run on", ["Active dataset", "All datasets"], horizontal=True)
-        if not datasets or df.empty:
-            st.info("Upload data on Home page.")
-        else:
-            method = st.radio("Method", ["pearson", "spearman", "kendall"], horizontal=True)
-            mask_upper = st.checkbox("Mask upper triangle", value=True)
-            annot = st.checkbox("Show numeric annotations", value=False)
-            st.divider()
-            if run_mode == "Active dataset":
-                render_corr_matrix(df, method=method, mask_upper=mask_upper, annot=annot, dataset_name=st.session_state[SS["active_name"]])
-            else:
-                iterate_datasets(render_corr_matrix, method=method, mask_upper=mask_upper, annot=annot)
-    with right:
-        data_summary_panel(df)
-        st.divider()
-        feature_delete_panel()
-
-elif page == "Bar Charts":
-    left, mid, right = three_pane("📊 Bar Charts (Categories Comparison)")
-    df = get_active_df()
-    with left:
-        chat_panel(CHAT_KEYS["Bar Charts"], header="🧠 Bar Chart Chat", system_prompt="Compare categories and discuss aggregations.")
-    with mid:
-        st.subheader("🎛️ Controls")
-        run_mode = st.radio("Run on", ["Active dataset", "All datasets"], horizontal=True)
-        if not datasets or df.empty:
-            st.info("Upload data on Home page.")
-        else:
-            cats = categorical_columns(df)
-            nums = numeric_columns(df)
-            x_cat = st.selectbox("X (categorical)", options=cats if cats else ["— none —"])
-            use_y = st.checkbox("Aggregate a numeric column?", value=True if nums else False)
-            y_num = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"]) if use_y and nums else None
-            agg = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0 if use_y else 2)
-            hue = st.selectbox("Hue (optional grouping)", options=["— None —"] + cats)
-            hue = None if hue == "— None —" else hue
-            top_n = st.number_input("Top N categories (by total value)", min_value=0, value=0, step=1, help="0 = show all")
-            sort_desc = st.checkbox("Sort descending", value=True)
-            st.divider()
-            if cats and x_cat != "— none —":
-                if run_mode == "Active dataset":
-                    render_bar_chart(
-                        df, x_cat=x_cat, y_num=(y_num if use_y and y_num in nums else None),
-                        agg=agg, hue=hue, top_n=top_n, sort_desc=sort_desc,
-                        dataset_name=st.session_state[SS["active_name"]]
+            # -------- Overview (3-pane) --------
+            with chart_tabs[0]:
+                left, mid, right = three_pane(f"Overview – {dname}")
+                with left:
+                    chat_panel(
+                        keyify(dname, "chat_overview"),
+                        header="🧠 Overview Chat",
+                        system_prompt="Summarize dataset shape, types, missingness, and top-level observations."
                     )
-                else:
-                    iterate_datasets(
-                        render_bar_chart,
-                        x_cat=x_cat, y_num=(y_num if use_y else None),
-                        agg=agg, hue=hue, top_n=top_n, sort_desc=sort_desc
+                with mid:
+                    st.subheader("Dataset Preview & Quick Stats")
+                    if df.empty:
+                        st.info("Empty dataset.")
+                    else:
+                        st.dataframe(df.head(50), use_container_width=True)
+                        nums = numeric_columns(df)
+                        if nums:
+                            st.markdown("**Numeric summary (describe):**")
+                            st.dataframe(df[nums].describe().T, use_container_width=True)
+                        cats = categorical_columns(df)
+                        if cats:
+                            st.markdown("**Top category levels (first 3 categorical cols):**")
+                            for col in cats[:3]:
+                                vc = df[col].value_counts(dropna=False).head(10)
+                                st.write(f"- {col}")
+                                st.dataframe(vc, use_container_width=True)
+                with right:
+                    data_summary_panel(df)
+                    st.divider()
+                    feature_delete_panel(dname)
+
+            # -------- Box Plots (3-pane) --------
+            with chart_tabs[1]:
+                left, mid, right = three_pane(f"Box Plots – {dname}")
+                with left:
+                    chat_panel(
+                        keyify(dname, "chat_box"),
+                        header="🧠 Box Plot Chat",
+                        system_prompt="Explain distribution, outliers (IQR), skewness, and group comparisons."
                     )
-            else:
-                st.info("No categorical columns found.")
-    with right:
-        data_summary_panel(df)
-        st.divider()
-        feature_delete_panel()
+                with mid:
+                    st.subheader("🎛️ Controls")
+                    if df.empty:
+                        st.info("Upload data.")
+                    else:
+                        cats = categorical_columns(df)
+                        groupby = st.selectbox("Group by (optional)", options=["— None —"] + cats, key=keyify(dname, "box_group"))
+                        groupby = None if groupby == "— None —" else groupby
+                        st.divider()
+                        render_boxplots(df, groupby=groupby)
+                with right:
+                    data_summary_panel(df)
+                    st.divider()
+                    feature_delete_panel(dname)
 
-elif page == "Line Charts":
-    left, mid, right = three_pane("📈 Line Charts (Trends Over Time)")
-    df = get_active_df()
-    with left:
-        chat_panel(CHAT_KEYS["Line Charts"], header="🧠 Line Chart Chat", system_prompt="Explain time trends, seasonality and aggregation.")
-    with mid:
-        st.subheader("🎛️ Controls")
-        run_mode = st.radio("Run on", ["Active dataset", "All datasets"], horizontal=True)
-        if not datasets or df.empty:
-            st.info("Upload data on Home page.")
-        else:
-            dt_cols = datetime_columns(df)
-            nums = numeric_columns(df)
-            time_col = st.selectbox("Time column", options=dt_cols if dt_cols else ["— none —"])
-            y_col = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"])
-            freq = st.selectbox("Resample frequency", options=["D", "W", "M", "Q", "Y"], index=2,
-                                help="D=day, W=week, M=month, Q=quarter, Y=year")
-            agg = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0)
-            groupby = st.selectbox("Group by (optional category)", options=["— None —"] + categorical_columns(df))
-            groupby = None if groupby == "— None —" else groupby
-            st.divider()
-            if dt_cols and nums and time_col != "— none —" and y_col != "— none —":
-                if run_mode == "Active dataset":
-                    render_line_chart(df, time_col=time_col, y_col=y_col, freq=freq, agg=agg, groupby=groupby, dataset_name=st.session_state[SS["active_name"]])
-                else:
-                    iterate_datasets(render_line_chart, time_col=time_col, y_col=y_col, freq=freq, agg=agg, groupby=groupby)
-            else:
-                st.info("Select a valid datetime column and a numeric Y.")
-    with right:
-        data_summary_panel(df)
-        st.divider()
-        feature_delete_panel()
+            # -------- Correlation Matrix (3-pane) --------
+            with chart_tabs[2]:
+                left, mid, right = three_pane(f"Correlation – {dname}")
+                with left:
+                    chat_panel(
+                        keyify(dname, "chat_corr"),
+                        header="🧠 Correlation Chat",
+                        system_prompt="Discuss correlation strength, multicollinearity and feature selection implications."
+                    )
+                with mid:
+                    st.subheader("🎛️ Controls")
+                    if df.empty:
+                        st.info("Upload data.")
+                    else:
+                        method = st.radio("Method", ["pearson", "spearman", "kendall"], horizontal=True, key=keyify(dname, "corr_method"))
+                        mask_upper = st.checkbox("Mask upper triangle", value=True, key=keyify(dname, "corr_mask"))
+                        annot = st.checkbox("Show numeric annotations", value=False, key=keyify(dname, "corr_annot"))
+                        st.divider()
+                        render_corr_matrix(df, method=method, mask_upper=mask_upper, annot=annot)
+                with right:
+                    data_summary_panel(df)
+                    st.divider()
+                    feature_delete_panel(dname)
 
-elif page == "Scatter Plots":
-    left, mid, right = three_pane("🔬 Scatter Plots (Relationships)")
-    df = get_active_df()
-    with left:
-        chat_panel(CHAT_KEYS["Scatter Plots"], header="🧠 Scatter Plot Chat", system_prompt="Discuss relationships, clusters, and outliers.")
-    with mid:
-        st.subheader("🎛️ Controls")
-        run_mode = st.radio("Run on", ["Active dataset", "All datasets"], horizontal=True)
-        if not datasets or df.empty:
-            st.info("Upload data on Home page.")
-        else:
-            nums = numeric_columns(df)
-            cats = categorical_columns(df)
-            x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"])
-            y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"])
-            hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats)
-            hue = None if hue == "— None —" else hue
-            sample_n = st.slider("Sample size (for speed)", min_value=500, max_value=100_000, value=5_000, step=500)
-            alpha = st.slider("Point opacity", 0.1, 1.0, 0.6, 0.05)
-            st.divider()
-            if nums and x != "— none —" and y != "— none —":
-                if run_mode == "Active dataset":
-                    render_scatter(df, x=x, y=y, hue=hue, sample_n=sample_n, alpha=alpha, dataset_name=st.session_state[SS["active_name"]])
-                else:
-                    iterate_datasets(render_scatter, x=x, y=y, hue=hue, sample_n=sample_n, alpha=alpha)
-            else:
-                st.info("Select numeric columns for X and Y.")
-    with right:
-        data_summary_panel(df)
-        st.divider()
-        feature_delete_panel()
+            # -------- Bar Charts (3-pane) --------
+            with chart_tabs[3]:
+                left, mid, right = three_pane(f"Bar Charts – {dname}")
+                with left:
+                    chat_panel(
+                        keyify(dname, "chat_bar"),
+                        header="🧠 Bar Chart Chat",
+                        system_prompt="Compare categories with sum/mean/count; discuss distributions and top-N."
+                    )
+                with mid:
+                    st.subheader("🎛️ Controls")
+                    if df.empty:
+                        st.info("Upload data.")
+                    else:
+                        cats = categorical_columns(df)
+                        nums = numeric_columns(df)
+                        x_cat = st.selectbox("X (categorical)", options=cats if cats else ["— none —"], key=keyify(dname, "bar_x"))
+                        use_y = st.checkbox("Aggregate a numeric column?", value=bool(nums), key=keyify(dname, "bar_usey"))
+                        y_num = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "bar_y")) if use_y and nums else None
+                        agg = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0 if use_y else 2, key=keyify(dname, "bar_agg"))
+                        hue = st.selectbox("Hue (optional grouping)", options=["— None —"] + cats, key=keyify(dname, "bar_hue"))
+                        hue = None if hue == "— None —" else hue
+                        top_n = st.number_input("Top N categories", min_value=0, value=0, step=1, key=keyify(dname, "bar_top"))
+                        sort_desc = st.checkbox("Sort descending", value=True, key=keyify(dname, "bar_sort"))
+                        st.divider()
+                        if cats and x_cat != "— none —":
+                            render_bar_chart(df, x_cat=x_cat, y_num=(y_num if use_y else None), agg=agg, hue=hue, top_n=top_n, sort_desc=sort_desc)
+                        else:
+                            st.info("No categorical columns found.")
+                with right:
+                    data_summary_panel(df)
+                    st.divider()
+                    feature_delete_panel(dname)
 
-elif page == "Bubble Charts":
-    left, mid, right = three_pane("🫧 Bubble Charts (Size‑Encoded Scatter)")
-    df = get_active_df()
-    with left:
-        chat_panel(CHAT_KEYS["Bubble Charts"], header="🧠 Bubble Chart Chat", system_prompt="Discuss size encoding and multi‑dimensional insights.")
-    with mid:
-        st.subheader("🎛️ Controls")
-        run_mode = st.radio("Run on", ["Active dataset", "All datasets"], horizontal=True)
-        if not datasets or df.empty:
-            st.info("Upload data on Home page.")
-        else:
-            nums = numeric_columns(df)
-            cats = categorical_columns(df)
-            x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"])
-            y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"])
-            size_col = st.selectbox("Size (numeric)", options=nums if nums else ["— none —"])
-            hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats)
-            hue = None if hue == "— None —" else hue
-            sample_n = st.slider("Sample size (for speed)", min_value=500, max_value=100_000, value=5_000, step=500)
-            alpha = st.slider("Point opacity", 0.1, 1.0, 0.6, 0.05)
-            st.divider()
-            if nums and x != "— none —" and y != "— none —" and size_col != "— none —":
-                if run_mode == "Active dataset":
-                    render_bubble(df, x=x, y=y, size_col=size_col, hue=hue, sample_n=sample_n, alpha=alpha, dataset_name=st.session_state[SS["active_name"]])
-                else:
-                    iterate_datasets(render_bubble, x=x, y=y, size_col=size_col, hue=hue, sample_n=sample_n, alpha=alpha)
-            else:
-                st.info("Select numeric columns for X, Y, and Size.")
-    with right:
-        data_summary_panel(df)
-        st.divider()
+            # -------- Line Charts (3-pane) --------
+            with chart_tabs[4]:
+                left, mid, right = three_pane(f"Line Charts – {dname}")
+                with left:
+                    chat_panel(
+                        keyify(dname, "chat_line"),
+                        header="🧠 Line Chart Chat",
+                        system_prompt="Explain time trends, seasonality, resampling and aggregation."
+                    )
+                with mid:
+                    st.subheader("🎛️ Controls")
+                    if df.empty:
+                        st.info("Upload data.")
+                    else:
+                        dt_cols = datetime_columns(df)
+                        nums = numeric_columns(df)
+                        time_col = st.selectbox("Time column", options=dt_cols if dt_cols else ["— none —"], key=keyify(dname, "line_time"))
+                        y_col = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "line_y"))
+                        freq = st.selectbox("Resample frequency", options=["D", "W", "M", "Q", "Y"], index=2, key=keyify(dname, "line_freq"))
+                        agg = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0, key=keyify(dname, "line_agg"))
+                        groupby = st.selectbox("Group by (optional category)", options=["— None —"] + categorical_columns(df), key=keyify(dname, "line_group"))
+                        groupby = None if groupby == "— None —" else groupby
+                        st.divider()
+                        if dt_cols and nums and time_col != "— none —" and y_col != "— none —":
+                            render_line_chart(df, time_col=time_col, y_col=y_col, freq=freq, agg=agg, groupby=groupby)
+                        else:
+                            st.info("Select a valid datetime column and a numeric Y.")
+                with right:
+                    data_summary_panel(df)
+                    st.divider()
+                    feature_delete_panel(dname)
+
+            # -------- Scatter Plots (3-pane) --------
+            with chart_tabs[5]:
+                left, mid, right = three_pane(f"Scatter Plots – {dname}")
+                with left:
+                    chat_panel(
+                        keyify(dname, "chat_scatter"),
+                        header="🧠 Scatter Plot Chat",
+                        system_prompt="Discuss relationships, clusters, outliers and segmentation."
+                    )
+                with mid:
+                    st.subheader("🎛️ Controls")
+                    if df.empty:
+                        st.info("Upload data.")
+                    else:
+                        nums = numeric_columns(df)
+                        cats = categorical_columns(df)
+                        x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "scatter_x"))
+                        y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "scatter_y"))
+                        hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats, key=keyify(dname, "scatter_hue"))
+                        hue = None if hue == "— None —" else hue
+                        sample_n = st.slider("Sample size", min_value=500, max_value=100_000, value=5_000, step=500, key=keyify(dname, "scatter_sample"))
+                        alpha = st.slider("Point opacity", 0.1, 1.0, 0.6, 0.05, key=keyify(dname, "scatter_alpha"))
+                        st.divider()
+                        if nums and x != "— none —" and y != "— none —":
+                            render_scatter(df, x=x, y=y, hue=hue, sample_n=sample_n, alpha=alpha)
+                        else:
+                            st.info("Select numeric columns for X and Y.")
+                with right:
+                    data_summary_panel(df)
+                    st.divider()
+                    feature_delete_panel(dname)
+
+            # -------- Bubble Charts (3-pane) --------
+            with chart_tabs[6]:
+                left, mid, right = three_pane(f"Bubble Charts – {dname}")
+                with left:
+                    chat_panel(
+                        keyify(dname, "chat_bubble"),
+                        header="🧠 Bubble Chart Chat",
+                        system_prompt="Discuss size encoding, multi-dimensional insights and scaling."
+                    )
+                with mid:
+                    st.subheader("🎛️ Controls")
+                    if df.empty:
+                        st.info("Upload data.")
+                    else:
+                        nums = numeric_columns(df)
+                        cats = categorical_columns(df)
+                        x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "bubble_x"))
+                        y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "bubble_y"))
+                        size_col = st.selectbox("Size (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "bubble_size"))
+                        hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats, key=keyify(dname, "bubble_hue"))
+                        hue = None if hue == "— None —" else hue
+                        sample_n = st.slider("Sample size", min_value=500, max_value=100_000, value=5_000, step=500, key=keyify(dname, "bubble_sample"))
+                        alpha = st.slider("Point opacity", 0.1, 1.0, 0.6, 0.05, key=keyify(dname, "bubble_alpha"))
+                        st.divider()
+                        if nums and x != "— none —" and y != "— none —" and size_col != "— none —":
+                            render_bubble(df, x=x, y=y, size_col=size_col, hue=hue, sample_n=sample_n, alpha=alpha)
+                        else:
+                            st.info("Select numeric columns for X, Y, and Size.")
+                with right:
+                    data_summary_panel(df)
+                    st.divider()
+                    feature_delete_panel(dname)
