@@ -126,7 +126,7 @@ def build_insight_context(df, numeric_df, numeric_summary, missing_vals, outlier
 
 def chat_with(thread_list, user_text, system_prompt, context_text):
     # Inject context on first turn
-    messages = [{"role": "Data Analyst", "content": system_prompt}]
+    messages = [{"role": "system", "content": system_prompt}]
     if not any(m.get("role") == "user" and m.get("tag") == "context" for m in thread_list):
         messages.append({"role": "user", "content": f"Context:\n{context_text}", "tag": "context"})
         thread_list.append({"role": "user", "content": f"Context:\n{context_text}", "tag": "context"})
@@ -286,7 +286,7 @@ for uploaded_file in uploaded_files:
                 "Numeric Summary": (numeric_df.describe().to_dict() if not numeric_df.empty else {})
             }
             msgs = [
-                {"role": "Data Analyst", "content": "You are a data analyst. Generate 3 concise, actionable insights."},
+                {"role": "system", "content": "You are a data analyst. Generate 3 concise, actionable insights."},
                 {"role": "user", "content": compact_json(insight_context)}
             ]
             txt = ai_call(msgs, max_completion_tokens=16384)
@@ -299,7 +299,7 @@ for uploaded_file in uploaded_files:
         st.subheader("🧪 Feature Engineering Ideas")
         try:
             fe_msgs = [
-                {"role": "Data Scientist", "content": "You are a feature engineering expert. Provide 5 specific ideas with short rationale."},
+                {"role": "system", "content": "You are a feature engineering expert. Provide 5 specific ideas with short rationale."},
                 {"role": "user", "content": compact_json(insight_context)}
             ]
             fe_txt = ai_call(fe_msgs, max_completion_tokens=16384)
@@ -330,7 +330,7 @@ for uploaded_file in uploaded_files:
         for m in st.session_state.chart_threads[file_key]:
             if m.get("tag") == "context":  # skip context echo
                 continue
-            st.chat_message("assistant" if m["role"] == "Data Analyst" else "user").write(m["content"])
+            st.chat_message("assistant" if m["role"] == "assistant" else "user").write(m["content"])
         # Chat input for charts (use placeholder as keyword ONLY)
         user_left = st.chat_input(
             placeholder=(seeds.get("left") or "Ask about any chart (e.g., correlations, outliers, categorical imbalance)…"),
