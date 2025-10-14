@@ -1,646 +1,409 @@
+
 # app.py
-import streamlit as st
-import pandas as pd
+import os
+import io
+import json
 import numpy as np
+import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import io, re
-from datetime import datetime
+import streamlit as st
+from openai import AzureOpenAI
 
-# -----------------------
-# Page config
-# -----------------------
-st.set_page_config(page_title="Agentic EDA (All Files, Same UI)", layout="wide")
+# ------------------------ Azure OpenAI Setup ------------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")  # https://<resource>.openai.azure.com
+OPENAI_DEPLOYMENT_NAME = os.getenv("OPENAI_DEPLOYMENT_NAME")  # Azure *deployment* name
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-10-21")  # GA version
 
-# -----------------------
-# Session state keys
-# -----------------------
-SS = {
-    "datasets": "datasets",   # dict: name -> {"original": df, "active": df, "versions": []}
-}
+client = None
+try:
+    if not OPENAI_API_KEY or not OPENAI_ENDPOINT or not OPENAI_DEPLOYMENT_NAME:
+        raise ValueError("Missing env vars: OPENAI_API_KEY, OPENAI_ENDPOINT, OPENAI_DEPLOYMENT_NAME")
+    if not OPENAI_ENDPOINT.startswith("https://"):
+        raise ValueError("OPENAI_ENDPOINT must start with https://")
+    client = AzureOpenAI(
+        api_key=OPENAI_API_KEY,
+        azure_endpoint=OPENAI_ENDPOINT,
+        api_version=OPENAI_API_VERSION,
+    )
+except Exception as e:
+    st.error(f"Error initializing Azure OpenAI client: {e}")
 
-# -----------------------
-# Utilities
-# -----------------------
-def keyify(*parts):
-    """Create a safe Streamlit key from parts (dataset + chart page + element)."""
-    s = "__".join(str(p) for p in parts)
-    return re.sub(r"[^a-zA-Z0-9_]", "_", s)
+# ------------------------ Page & Session ------------------------
+st.set_page_config(page_title="Agentic EDA — Charts (Left) & Insights (Right)", layout="wide")
+st.title("Agentic EDA Tool — Discuss Charts (Left) and Insights/Feature Engineering (Right)")
 
-@st.cache_data(show_spinner=False)
-def read_file(uploaded_file) -> pd.DataFrame:
-    """Read CSV/Parquet/Excel into a DataFrame."""
-    if uploaded_file is None:
-        return pd.DataFrame()
-    name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        return pd.read_csv(uploaded_file)
-    elif name.endswith(".parquet"):
-        # Requires pyarrow or fastparquet installed
-        return pd.read_parquet(uploaded_file)
-    elif name.endswith(".xlsx") or name.endswith(".xls"):
-        return pd.read_excel(uploaded_file)
-    else:
-        raise ValueError("Unsupported file type. Use CSV/Parquet/Excel.")
+if "chart_threads" not in st.session_state:
+    st.session_state.chart_threads = {}   # per-file, chart discussions
+if "insight_threads" not in st.session_state:
+    st.session_state.insight_threads = {} # per-file, insights discussions
+if "seeds" not in st.session_state:
+    st.session_state.seeds = {}           # quick prefill per file for left/right chats
 
-def _ensure_unique_name(existing, base):
-    """Ensure dataset name uniqueness by adding suffixes when needed."""
-    if base not in existing:
-        return base
-    idx = 1
-    while f"{base} ({idx})" in existing:
-        idx += 1
-    return f"{base} ({idx})"
-
-def ingest_files(files):
-    """Load multiple files into session_state datasets."""
-    if SS["datasets"] not in st.session_state:
-        st.session_state[SS["datasets"]] = {}
-    datasets = st.session_state[SS["datasets"]]
-    for f in files:
-        try:
-            df = read_file(f)
-            name = _ensure_unique_name(datasets.keys(), f.name)
-            datasets[name] = {"original": df.copy(), "active": df.copy(), "versions": []}
-        except Exception as e:
-            st.sidebar.error(f"Failed to read {f.name}: {e}")
-
-def get_df(dataset_name) -> pd.DataFrame:
-    datasets = st.session_state.get(SS["datasets"], {})
-    if dataset_name in datasets:
-        return datasets[dataset_name]["active"]
-    return pd.DataFrame()
-
-def set_df(dataset_name, df, version_name=None, diff=None):
-    datasets = st.session_state.get(SS["datasets"], {})
-    if dataset_name in datasets:
-        datasets[dataset_name]["active"] = df
-        if version_name:
-            datasets[dataset_name]["versions"].append(
-                {"name": version_name, "df": df.copy(), "diff": diff}
-            )
-
-def undo_last_version(dataset_name):
-    datasets = st.session_state.get(SS["datasets"], {})
-    if dataset_name not in datasets:
-        return "Dataset not found."
-    versions = datasets[dataset_name]["versions"]
-    if not versions:
-        datasets[dataset_name]["active"] = datasets[dataset_name]["original"].copy()
-        return "No versions to undo. Reverted to original."
-    versions.pop()
-    if versions:
-        datasets[dataset_name]["active"] = versions[-1]["df"].copy()
-        return "Reverted to previous version."
-    else:
-        datasets[dataset_name]["active"] = datasets[dataset_name]["original"].copy()
-        return "Reverted to original."
-
-def export_df(df: pd.DataFrame, fmt: str = "csv") -> bytes:
-    if fmt == "csv":
-        return df.to_csv(index=False).encode("utf-8")
-    elif fmt == "parquet":
-        buf = io.BytesIO()
-        df.to_parquet(buf, index=False)  # requires pyarrow
-        return buf.getvalue()
-    else:
-        raise ValueError("Unsupported export format.")
-
-# -----------------------
-# Column helpers
-# -----------------------
-def numeric_columns(df: pd.DataFrame):
-    return df.select_dtypes(include=[np.number]).columns.tolist()
-
-def categorical_columns(df: pd.DataFrame):
-    return df.select_dtypes(exclude=[np.number]).columns.tolist()
-
-def datetime_columns(df: pd.DataFrame):
-    dt_cols = []
-    for col in df.columns:
-        if np.issubdtype(df[col].dtype, np.datetime64):
-            dt_cols.append(col)
-    for col in df.select_dtypes(include=["object"]).columns:
-        try:
-            pd.to_datetime(df[col], errors="raise")
-            dt_cols.append(col)
-        except Exception:
-            pass
-    return list(dict.fromkeys(dt_cols))
-
-def ensure_datetime(series: pd.Series):
-    if np.issubdtype(series.dtype, np.datetime64):
-        return series
+# ------------------------ Helpers ------------------------
+def compact_json(obj, limit_chars=7000):
     try:
-        return pd.to_datetime(series)
+        s = json.dumps(obj, ensure_ascii=False)
+        return s[:limit_chars]
     except Exception:
-        return series
+        return str(obj)[:limit_chars]
 
-# -----------------------
-# Layout helper
-# -----------------------
-def three_pane(title: str):
-    st.title(title)
-    left, mid, right = st.columns([1.1, 1.8, 1.1])
-    return left, mid, right
+def correlation_summary(corr_df: pd.DataFrame, top_k=5):
+    try:
+        pairs = []
+        cols = list(corr_df.columns)
+        for i in range(len(cols)):
+            for j in range(i+1, len(cols)):
+                val = float(corr_df.iloc[i, j])
+                pairs.append((cols[i], cols[j], val))
+        pairs = sorted(pairs, key=lambda x: abs(x[2]), reverse=True)
+        top_pos = [(a, b, round(v, 3)) for a, b, v in pairs if v > 0][:top_k]
+        top_neg = [(a, b, round(v, 3)) for a, b, v in pairs if v < 0][:top_k]
+        return top_pos, top_neg
+    except Exception as e:
+        st.error(f"Error summarizing correlations: {e}")
+        return [], []
 
-# -----------------------
-# Chat panel (stubbed; wire Azure OpenAI later)
-# -----------------------
-def llm_call(system_prompt: str, messages: list) -> str:
-    return "🔎 (Stub) I would explain this chart based on the controls and dataset context."
+def iqr_outliers_count(s: pd.Series):
+    q1, q3 = s.quantile(0.25), s.quantile(0.75)
+    iqr = q3 - q1
+    low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    return int(((s < low) | (s > high)).sum())
 
-def chat_panel(state_key: str, header: str, system_prompt: str = None,
-               input_key: str = None, clear_key: str = None):
-    """Chat panel with UNIQUE keys for chat_input and clear button."""
-    st.subheader(header)
+def ai_call(messages, max_completion_tokens=16384):
+    if client is None:
+        return "Azure OpenAI client is not initialized."
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_DEPLOYMENT_NAME,
+            messages=messages,
+            max_completion_tokens=max_completion_tokens,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        st.error(f"Error calling OpenAI API: {e}")
+        return ""
 
-    # Persist messages in session_state under a dataset+chart specific key
-    msgs = st.session_state.setdefault(state_key, [])
+def ensure_threads(file_key):
+    st.session_state.chart_threads.setdefault(file_key, [])
+    st.session_state.insight_threads.setdefault(file_key, [])
 
-    # Render past messages
-    for m in msgs:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
+def build_chart_context(df, numeric_df, missing_vals, corr_ctx, outliers_ctx, cat_ctx):
+    try:
+        buf = io.StringIO()
+        df.info(buf=buf)
+        return {
+            "shape": df.shape,
+            "columns_head": df.columns.tolist()[:60],
+            "data_info": buf.getvalue()[:2500],
+            "charts": {
+                "missing_top": missing_vals.head(30).to_dict() if isinstance(missing_vals, pd.Series) else {},
+                "corr_summary": corr_ctx or {},
+                "outliers_top": outliers_ctx or [],
+                "categorical_summary": cat_ctx or {},
+                "numeric_cols_count": int(numeric_df.shape[1]) if isinstance(numeric_df, pd.DataFrame) else 0,
+            }
+        }
+    except Exception as e:
+        st.error(f"Error building chart context: {e}")
+        return {}
 
-    # ✅ Unique key for chat_input
-    user_input = st.chat_input("Ask about the chart…", key=input_key)
-    if user_input:
-        msgs.append({"role": "user", "content": user_input})
-        response = llm_call(system_prompt or "", msgs)   # <-- wire Azure OpenAI here
-        msgs.append({"role": "assistant", "content": response})
-        st.session_state[state_key] = msgs
+def build_insight_context(df, numeric_df, numeric_summary, missing_vals, outlier_summary, dq_score, insight_cards, feat_ideas):
+    try:
+        return {
+            "shape": df.shape,
+            "missing_cols": int((missing_vals > 0).sum()) if isinstance(missing_vals, pd.Series) else 0,
+            "numeric_summary_head": (numeric_summary.head(30).to_dict() if isinstance(numeric_summary, pd.DataFrame) and not numeric_summary.empty else {}),
+            "outliers_top": sorted(outlier_summary.items(), key=lambda kv: kv[1], reverse=True)[:12] if outlier_summary else [],
+            "data_quality_score": dq_score,
+            "insight_cards": insight_cards or [],
+            "feature_engineering_ideas": feat_ideas or [],
+        }
+    except Exception as e:
+        st.error(f"Error building insight context: {e}")
+        return {}
 
-    # ✅ Unique key for "Clear chat" button
-    cols_btn = st.columns([1, 1])
-    with cols_btn[0]:
-        if st.button("Clear chat", key=clear_key):
-            st.session_state[state_key] = []
-            st.experimental_rerun()
-    with cols_btn[1]:
-        st.caption("Chat is scoped to this dataset & chart.")
+def chat_with(thread_list, user_text, system_prompt, context_text):
+    # Inject context on first turn
+    messages = [{"role": "system", "content": system_prompt}]
+    if not any(m.get("role") == "user" and m.get("tag") == "context" for m in thread_list):
+        messages.append({"role": "user", "content": f"Context:\n{context_text}", "tag": "context"})
+        thread_list.append({"role": "user", "content": f"Context:\n{context_text}", "tag": "context"})
+    # Prior history
+    messages.extend({"role": m["role"], "content": m["content"]} for m in thread_list if m.get("tag") != "context")
+    # Current user input
+    messages.append({"role": "user", "content": user_text})
+    reply = ai_call(messages, max_completion_tokens=16384)
+    if reply:
+        thread_list.append({"role": "user", "content": user_text})
+        thread_list.append({"role": "assistant", "content": reply})
+        st.chat_message("user").write(user_text)
+        st.chat_message("assistant").write(reply)
 
-def chat_for(dataset_name: str, chart_slug: str, header: str, prompt: str):
-    """Convenience wrapper to create unique keys per dataset x chart."""
-    return chat_panel(
-        state_key=keyify(dataset_name, "chat", chart_slug),
-        header=header,
-        system_prompt=prompt,
-        input_key=keyify(dataset_name, "chat_input", chart_slug),
-        clear_key=keyify(dataset_name, "chat_clear", chart_slug),
-    )
+# ------------------------ Upload & EDA ------------------------
+uploaded_files = st.file_uploader("Upload CSV files", type=["csv"], accept_multiple_files=True)
 
-# -----------------------
-# Right pane: data summary + feature deletion/export
-# -----------------------
-def data_summary_panel(df: pd.DataFrame):
-    st.subheader("📚 Data Understanding")
-    if df.empty:
-        st.info("Empty dataset.")
-        return
-    st.write(f"**Rows:** {df.shape[0]} **Columns:** {df.shape[1]}")
-    st.markdown("**Types:**")
-    st.write(df.dtypes.astype(str))
-    st.markdown("**Missing values (%):**")
-    st.write((df.isna().mean() * 100).round(2))
-    with st.expander("Preview (top 30 rows)"):
-        st.dataframe(df.head(30), use_container_width=True)
+if not uploaded_files:
+    st.info("Upload one or more CSV files to start EDA.")
+    st.stop()
 
-def feature_delete_panel(dataset_name: str):
-    st.subheader("🧹 Delete Features & Export")
-    df = get_df(dataset_name)
-    if df.empty:
-        st.info("No data to manage.")
-        return
+for uploaded_file in uploaded_files:
+    file_key = uploaded_file.name
+    ensure_threads(file_key)
 
-    drop_cols = st.multiselect("Select features to delete", options=list(df.columns), default=[],
-                               key=keyify(dataset_name, "del_multiselect"))
-    if drop_cols:
-        st.caption(f"Dropping {len(drop_cols)} column(s): {drop_cols}")
-
-    version_name = st.text_input(
-        "Version name",
-        value=f"{dataset_name}__drop__{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        key=keyify(dataset_name, "del_version_name")
-    )
-    cols = st.columns([1, 1, 1])
-    with cols[0]:
-        if st.button("Apply deletion", key=keyify(dataset_name, "apply_delete")):
-            new_df = df.drop(columns=drop_cols) if drop_cols else df.copy()
-            diff = {"dropped_columns": drop_cols}
-            set_df(dataset_name, new_df, version_name=version_name, diff=diff)
-            st.success(f"Applied to **{dataset_name}** → {new_df.shape[0]} × {new_df.shape[1]}")
-
-    with cols[1]:
-        if st.button("Undo last change", key=keyify(dataset_name, "undo")):
-            msg = undo_last_version(dataset_name)
-            st.warning(msg)
-
-    with cols[2]:
-        if st.button("Reset to original", key=keyify(dataset_name, "reset")):
-            datasets = st.session_state.get(SS["datasets"], {})
-            if dataset_name in datasets:
-                datasets[dataset_name]["active"] = datasets[dataset_name]["original"].copy()
-                datasets[dataset_name]["versions"].clear()
-                st.warning("Reset to original.")
-
-    st.markdown("---")
-    export_fmt = st.selectbox("Export format", ["csv", "parquet"], key=keyify(dataset_name, "export_fmt"))
-    file_name = st.text_input("Export file name (without extension)", value=f"{dataset_name}__cleaned",
-                              key=keyify(dataset_name, "export_name"))
-    out = export_df(get_df(dataset_name), fmt=export_fmt)
-    st.download_button(
-        label=f"⬇️ Download {export_fmt.upper()}",
-        data=out,
-        file_name=f"{file_name}.{export_fmt}",
-        mime="text/csv" if export_fmt == "csv" else "application/octet-stream",
-        use_container_width=True,
-        key=keyify(dataset_name, "download_btn", export_fmt)
-    )
-
-# -----------------------
-# Chart renderers
-# -----------------------
-def render_boxplots(df: pd.DataFrame, groupby: str | None):
-    nums = numeric_columns(df)
-    if not nums:
-        st.info("No numeric columns for box plots.")
-        return
-    for col in nums:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        if groupby and groupby in df.columns:
-            sns.boxplot(x=df[groupby], y=df[col], ax=ax)
-            ax.set_title(f"{col} by {groupby}")
-            ax.set_xlabel(groupby); ax.set_ylabel(col)
-        else:
-            sns.boxplot(y=df[col], ax=ax)
-            ax.set_title(f"{col} distribution")
-            ax.set_ylabel(col)
-        st.pyplot(fig, clear_figure=True)
-
-def render_corr_matrix(df: pd.DataFrame, method: str = "pearson", mask_upper: bool = True, annot: bool = False):
-    nums = numeric_columns(df)
-    if len(nums) < 2:
-        st.info("Need ≥ 2 numeric columns for correlation.")
-        return
-    corr = df[nums].corr(method=method)
-    fig, ax = plt.subplots(figsize=(7, 6))
-    mask = np.triu(np.ones_like(corr, dtype=bool)) if mask_upper else None
-    sns.heatmap(corr, mask=mask, cmap="coolwarm", center=0, annot=annot, fmt=".2f", ax=ax)
-    ax.set_title(f"Correlation ({method})")
-    st.pyplot(fig, clear_figure=True)
-
-def render_bar_chart(df: pd.DataFrame, x_cat: str, y_num: str | None, agg: str, hue: str | None, top_n: int, sort_desc: bool):
-    if x_cat not in df.columns:
-        st.info("Pick a valid categorical column for X.")
-        return
-    temp = df.copy()
-    if y_num and y_num in temp.columns:
-        grp_cols = [x_cat] + ([hue] if hue and hue in temp.columns else [])
-        aggfunc = {"sum": "sum", "mean": "mean", "count": "count"}[agg]
-        g = temp.groupby(grp_cols, dropna=False)[y_num].agg(aggfunc).reset_index(name="value")
-    else:
-        grp_cols = [x_cat] + ([hue] if hue and hue in temp.columns else [])
-        g = temp.groupby(grp_cols, dropna=False).size().reset_index(name="value")
-
-    if sort_desc:
-        g = g.sort_values("value", ascending=False)
-    if top_n and top_n > 0 and x_cat in g.columns:
-        top_keys = g.groupby(x_cat)["value"].sum().sort_values(ascending=False).head(top_n).index
-        g = g[g[x_cat].isin(top_keys)]
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    if hue and hue in g.columns:
-        sns.barplot(data=g, x=x_cat, y="value", hue=hue, ax=ax)
-    else:
-        sns.barplot(data=g, x=x_cat, y="value", ax=ax)
-    ax.set_xlabel(x_cat)
-    ax.set_ylabel(f"{agg}({y_num})" if y_num else "count")
-    ax.set_title("Bar Chart")
-    plt.xticks(rotation=30, ha="right")
-    st.pyplot(fig, clear_figure=True)
-
-def render_line_chart(df: pd.DataFrame, time_col: str, y_col: str, freq: str, agg: str, groupby: str | None):
-    if time_col not in df.columns or y_col not in df.columns:
-        st.info("Select a valid time column and numeric Y.")
-        return
-    temp = df.copy()
-    temp[time_col] = ensure_datetime(temp[time_col])
-    if not np.issubdtype(temp[time_col].dtype, np.datetime64):
-        st.warning(f"Column '{time_col}' could not be parsed as datetime.")
-        return
-    if groupby and groupby in temp.columns:
-        grouped = temp.set_index(time_col).groupby(groupby)[y_col]
-        pieces = []
-        for k, s in grouped:
-            try:
-                res = getattr(s.resample(freq), agg)()
-            except Exception:
-                res = s.resample(freq).mean()
-            pieces.append(res.reset_index().assign(**{groupby: k}))
-        agg_df = pd.concat(pieces, ignore_index=True)
-    else:
+    with st.expander(f"📄 EDA for {file_key}", expanded=True):
+        # Read CSV robustly
         try:
-            agg_df = getattr(temp.set_index(time_col)[y_col].resample(freq), agg)().reset_index()
-        except Exception:
-            agg_df = temp.set_index(time_col)[y_col].resample(freq).mean().reset_index()
+            df = pd.read_csv(uploaded_file, low_memory=False)
+        except Exception as e:
+            st.error(f"Error reading CSV '{file_key}': {e}")
+            continue
 
-    fig, ax = plt.subplots(figsize=(7, 5))
-    if groupby and groupby in agg_df.columns:
-        sns.lineplot(data=agg_df, x=time_col, y=y_col, hue=groupby, ax=ax, marker="o")
-    else:
-        sns.lineplot(data=agg_df, x=time_col, y=y_col, ax=ax, marker="o")
-    ax.set_title(f"Line Chart ({agg} per {freq})")
-    ax.set_xlabel(time_col); ax.set_ylabel(y_col)
-    st.pyplot(fig, clear_figure=True)
+        # 1) Preview
+        st.subheader("👀 Data Preview")
+        try:
+            st.dataframe(df.head(100))
+        except Exception as e:
+            st.error(f"Error displaying preview: {e}")
 
-def render_scatter(df: pd.DataFrame, x: str, y: str, hue: str | None, sample_n: int, alpha: float):
-    if x not in df.columns or y not in df.columns:
-        st.info("Select numeric columns for X and Y.")
-        return
-    temp = df[[x, y] + ([hue] if hue and hue in df.columns else [])].dropna().copy()
-    if sample_n and len(temp) > sample_n:
-        temp = temp.sample(sample_n, random_state=42)
-    fig, ax = plt.subplots(figsize=(7, 5))
-    sns.scatterplot(data=temp, x=x, y=y, hue=(hue if hue and hue in temp.columns else None), alpha=alpha, ax=ax)
-    ax.set_title("Scatter Plot")
-    st.pyplot(fig, clear_figure=True)
+        # 2) Missing
+        st.subheader("❓ Missing Values")
+        try:
+            missing_vals = df.isna().sum().sort_values(ascending=False)
+            st.dataframe(missing_vals.rename("missing_count"))
+        except Exception as e:
+            st.error(f"Error computing missing values: {e}")
+            missing_vals = pd.Series(dtype="int64")
 
-def render_bubble(df: pd.DataFrame, x: str, y: str, size_col: str, hue: str | None, sample_n: int, alpha: float):
-    if x not in df.columns or y not in df.columns or size_col not in df.columns:
-        st.info("Select numeric columns for X, Y, and Size.")
-        return
-    temp = df[[x, y, size_col] + ([hue] if hue and hue in df.columns else [])].dropna().copy()
-    s = temp[size_col].astype(float)
-    s_min, s_max = (np.percentile(s, 5), np.percentile(s, 95)) if len(s) > 20 else (s.min(), s.max())
-    sizes = np.full_like(s, 200, dtype=float) if s_max == s_min else 100 + 900 * (np.clip(s, s_min, s_max) - s_min) / (s_max - s_min)
-    temp["_size"] = sizes
-    if sample_n and len(temp) > sample_n:
-        temp = temp.sample(sample_n, random_state=42)
-    fig, ax = plt.subplots(figsize=(7, 5))
-    sns.scatterplot(
-        data=temp, x=x, y=y, size="_size", sizes=(50, 1000),
-        hue=(hue if hue and hue in temp.columns else None),
-        alpha=alpha, ax=ax, legend=True
-    )
-    ax.set_title("Bubble Chart")
-    st.pyplot(fig, clear_figure=True)
+        # 3) Numeric summary
+        st.subheader("🧮 Summary Statistics (Numeric)")
+        try:
+            numeric_df = df.select_dtypes(include=["number"])
+            if numeric_df.empty:
+                st.warning("No numeric columns found.")
+                numeric_summary = pd.DataFrame()
+            else:
+                numeric_summary = numeric_df.describe().T
+                st.dataframe(numeric_summary)
+        except Exception as e:
+            st.error(f"Error computing numeric summary: {e}")
+            numeric_df, numeric_summary = pd.DataFrame(), pd.DataFrame()
 
-# -----------------------
-# Sidebar: uploads + tips
-# -----------------------
-st.sidebar.title("📂 Upload Datasets")
-uploads = st.sidebar.file_uploader(
-    "Upload multiple CSV / Parquet / Excel files",
-    type=["csv", "parquet", "xlsx", "xls"],
-    accept_multiple_files=True
-)
-if uploads:
-    ingest_files(uploads)
+        # 4) Correlation heatmap
+        st.subheader("🔗 Correlation Matrix")
+        corr_ctx = {}
+        try:
+            if not numeric_df.empty and numeric_df.shape[1] >= 2:
+                var = numeric_df.var().sort_values(ascending=False)
+                cols = var.head(20).index.tolist()
+                corr = numeric_df[cols].corr(numeric_only=True)
+                fig, ax = plt.subplots(figsize=(min(0.5 * len(cols) + 4, 16), min(0.5 * len(cols) + 4, 16)))
+                sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax, square=True, cbar_kws={"shrink": 0.8})
+                ax.set_title("Correlation Heatmap (top-variance numeric features)")
+                plt.tight_layout()
+                st.pyplot(fig)
+                top_pos, top_neg = correlation_summary(corr, top_k=5)
+                corr_ctx = {"columns_plotted": cols, "top_positive_pairs": top_pos, "top_negative_pairs": top_neg}
+            else:
+                st.info("Not enough numeric columns for correlation heatmap.")
+        except Exception as e:
+            st.error(f"Error generating correlation heatmap: {e}")
 
-datasets = st.session_state.get(SS["datasets"], {})
-if not datasets:
-    st.sidebar.info("Upload files to begin. Parquet requires `pyarrow`; Excel requires `openpyxl`.")
+        # 5) Outliers & boxplots
+        st.subheader("🚨 Outlier Detection (IQR Method)")
+        outliers_ctx = []
+        outlier_summary = {}
+        try:
+            if not numeric_df.empty:
+                for col in numeric_df.columns:
+                    cnt = iqr_outliers_count(numeric_df[col].dropna())
+                    outlier_summary[col] = cnt
+                st.write("Outlier counts per numeric column:")
+                st.json({k: int(v) for k, v in outlier_summary.items()})
+                # plot top 10
+                top_cols = sorted(outlier_summary, key=outlier_summary.get, reverse=True)[:10]
+                outliers_ctx = [(c, int(outlier_summary[c])) for c in top_cols]
+                for col in top_cols:
+                    fig, ax = plt.subplots(figsize=(6, 2.8))
+                    sns.boxplot(x=numeric_df[col], ax=ax, color="#6BAED6")
+                    ax.set_title(f"Boxplot: {col} (outliers: {outlier_summary[col]})", fontsize=11)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+            else:
+                st.info("No numeric columns for outlier analysis.")
+        except Exception as e:
+            st.error(f"Error during outlier detection/plotting: {e}")
 
-with st.sidebar.expander("Help / Troubleshooting"):
-    st.write("- If charts don't update after deletion, change a control or rerun (↻).")
-    st.write("- For large files, use sampling on Scatter/Bubble.")
-    st.write("- Clear cache via **Settings → Clear cache** if data seems stale.")
+        # 6) Categorical analysis
+        st.subheader("🔤 Categorical Feature Analysis")
+        cat_ctx = {}
+        try:
+            categorical_df = df.select_dtypes(include=["object", "category", "bool"])
+            if categorical_df.empty:
+                st.info("No categorical columns found.")
+            else:
+                for col in categorical_df.columns:
+                    vc = df[col].value_counts(dropna=False).head(30)
+                    st.write(f"Top categories for **{col}**:")
+                    st.dataframe(vc.rename("count"))
+                    fig, ax = plt.subplots(figsize=(7, 3.5))
+                    sns.barplot(x=vc.index.astype(str), y=vc.values, ax=ax, color="#FD8D3C")
+                    ax.set_title(f"Value counts: {col}")
+                    ax.set_ylabel("count")
+                    ax.set_xlabel(col)
+                    for tick in ax.get_xticklabels():
+                        tick.set_rotation(45)
+                        tick.set_ha("right")
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    cat_ctx[col] = {str(k): int(v) for k, v in vc.to_dict().items()}
+        except Exception as e:
+            st.error(f"Error in categorical analysis: {e}")
 
-# -----------------------
-# Main: tabs per dataset
-# -----------------------
-if not datasets:
-    st.info("No datasets loaded yet. Upload multiple files from the sidebar.")
-else:
-    dataset_names = sorted(datasets.keys())
-    tabs = st.tabs(dataset_names)
+        # 7) Data Quality Score
+        st.subheader("🧪 Data Quality Score")
+        dq_score = None
+        try:
+            total_cells = df.shape[0] * df.shape[1]
+            missing_ratio = (missing_vals.sum() / total_cells) if total_cells > 0 else 0.0
+            outlier_cells = int(sum(outlier_summary.values()))
+            numeric_cells = int(numeric_df.shape[0] * numeric_df.shape[1]) if not numeric_df.empty else 1
+            outlier_ratio = outlier_cells / numeric_cells
+            dq_score = max(0.0, 100.0 - (missing_ratio * 60.0 + outlier_ratio * 40.0) * 100.0)
+            st.metric("Estimated Data Quality Score", f"{dq_score:.2f}/100")
+        except Exception as e:
+            st.error(f"Error computing data quality score: {e}")
 
-    for tab, dname in zip(tabs, dataset_names):
-        with tab:
-            df = get_df(dname)
-            st.markdown(f"### 📁 Dataset: **{dname}**  |  Shape: `{df.shape[0]} × {df.shape[1]}`")
+        # 8) AI Insight Cards & Feature Ideas (used by RIGHT chat context)
+        st.subheader("🧠 AI Insight Cards")
+        insight_cards = []
+        feat_ideas = []
+        try:
+            insight_context = {
+                "Missing Values": missing_vals.to_dict() if isinstance(missing_vals, pd.Series) else {},
+                "Outliers": outlier_summary,
+                "Numeric Summary": (numeric_df.describe().to_dict() if not numeric_df.empty else {})
+            }
+            msgs = [
+                {"role": "system", "content": "You are a data analyst. Generate 3 concise, actionable insights."},
+                {"role": "user", "content": compact_json(insight_context)}
+            ]
+            txt = ai_call(msgs, max_completion_tokens=16384)
+            insight_cards = [line.strip("•- ").strip() for line in txt.split("\n") if line.strip()]
+            for card in insight_cards:
+                st.info(card)
+        except Exception as e:
+            st.error(f"Error calling OpenAI API: {e}")
 
-            # Sub-tabs per chart page
-            chart_tabs = st.tabs([
-                "Overview",
-                "Box Plots",
-                "Correlation Matrix",
-                "Bar Charts",
-                "Line Charts",
-                "Scatter Plots",
-                "Bubble Charts",
-            ])
+        st.subheader("🧪 Feature Engineering Ideas")
+        try:
+            fe_msgs = [
+                {"role": "system", "content": "You are a feature engineering expert. Provide 5 specific ideas with short rationale."},
+                {"role": "user", "content": compact_json(insight_context)}
+            ]
+            fe_txt = ai_call(fe_msgs, max_completion_tokens=16384)
+            feat_ideas = [line.strip("•- ").strip() for line in fe_txt.split("\n") if line.strip()]
+            for idea in feat_ideas:
+                st.success(idea)
+        except Exception as e:
+            st.error(f"Error calling OpenAI API: {e}")
 
-            # -------- Overview (3-pane) --------
-            with chart_tabs[0]:
-                left, mid, right = three_pane(f"Overview – {dname}")
-                with left:
-                    chat_for(dname, "overview", "🧠 Overview Chat",
-                             "Summarize dataset shape, types, missingness, and top-level observations.")
-                with mid:
-                    st.subheader("Dataset Preview & Quick Stats")
-                    if df.empty:
-                        st.info("Empty dataset.")
-                    else:
-                        st.dataframe(df.head(50), use_container_width=True)
-                        nums = numeric_columns(df)
-                        if nums:
-                            st.markdown("**Numeric summary (describe):**")
-                            st.dataframe(df[nums].describe().T, use_container_width=True)
-                        cats = categorical_columns(df)
-                        if cats:
-                            st.markdown("**Top category levels (first 3 categorical cols):**")
-                            for col in cats[:3]:
-                                vc = df[col].value_counts(dropna=False).head(10)
-                                st.write(f"- {col}")
-                                st.dataframe(vc, use_container_width=True)
-                with right:
-                    data_summary_panel(df)
-                    st.divider()
-                    feature_delete_panel(dname)
+    # ------------------------ DESIGN: Two-pane Conversation ------------------------
+    st.markdown("### 💬 Discuss your EDA (Left: Charts) vs (Right: Insights & Feature Engineering)")
 
-            # -------- Box Plots (3-pane) --------
-            with chart_tabs[1]:
-                left, mid, right = three_pane(f"Box Plots – {dname}")
-                with left:
-                    chat_for(dname, "box", "🧠 Box Plot Chat",
-                             "Explain distribution, outliers (IQR), skewness, and group comparisons.")
-                with mid:
-                    st.subheader("🎛️ Controls")
-                    if df.empty:
-                        st.info("Upload data.")
-                    else:
-                        cats = categorical_columns(df)
-                        groupby = st.selectbox("Group by (optional)", options=["— None —"] + cats,
-                                               key=keyify(dname, "box_group"))
-                        groupby = None if groupby == "— None —" else groupby
-                        st.divider()
-                        render_boxplots(df, groupby=groupby)
-                with right:
-                    data_summary_panel(df)
-                    st.divider()
-                    feature_delete_panel(dname)
+    # Build contexts for each pane
+    chart_context = build_chart_context(df, numeric_df, missing_vals, corr_ctx, outliers_ctx, cat_ctx)
+    insight_context_full = build_insight_context(df, numeric_df, numeric_summary, missing_vals, outlier_summary, dq_score, insight_cards, feat_ideas)
 
-            # -------- Correlation Matrix (3-pane) --------
-            with chart_tabs[2]:
-                left, mid, right = three_pane(f"Correlation – {dname}")
-                with left:
-                    chat_for(dname, "corr", "🧠 Correlation Chat",
-                             "Discuss correlation strength, multicollinearity and feature selection implications.")
-                with mid:
-                    st.subheader("🎛️ Controls")
-                    if df.empty:
-                        st.info("Upload data.")
-                    else:
-                        method = st.radio("Method", ["pearson", "spearman", "kendall"], horizontal=True,
-                                          key=keyify(dname, "corr_method"))
-                        mask_upper = st.checkbox("Mask upper triangle", value=True,
-                                                 key=keyify(dname, "corr_mask"))
-                        annot = st.checkbox("Show numeric annotations", value=False,
-                                            key=keyify(dname, "corr_annot"))
-                        st.divider()
-                        render_corr_matrix(df, method=method, mask_upper=mask_upper, annot=annot)
-                with right:
-                    data_summary_panel(df)
-                    st.divider()
-                    feature_delete_panel(dname)
+    # Prefill seeds from previous clicks (optional)
+    seeds = st.session_state.seeds.get(file_key, {"left": "", "right": ""})
 
-            # -------- Bar Charts (3-pane) --------
-            with chart_tabs[3]:
-                left, mid, right = three_pane(f"Bar Charts – {dname}")
-                with left:
-                    chat_for(dname, "bar", "🧠 Bar Chart Chat",
-                             "Compare categories with sum/mean/count; discuss distributions and top-N.")
-                with mid:
-                    st.subheader("🎛️ Controls")
-                    if df.empty:
-                        st.info("Upload data.")
-                    else:
-                        cats = categorical_columns(df)
-                        nums = numeric_columns(df)
-                        x_cat = st.selectbox("X (categorical)", options=cats if cats else ["— none —"],
-                                             key=keyify(dname, "bar_x"))
-                        use_y = st.checkbox("Aggregate a numeric column?", value=bool(nums),
-                                            key=keyify(dname, "bar_usey"))
-                        y_num = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"],
-                                             key=keyify(dname, "bar_y")) if use_y and nums else None
-                        agg = st.selectbox("Aggregation", options=["sum", "mean", "count"],
-                                           index=0 if use_y else 2, key=keyify(dname, "bar_agg"))
-                        hue = st.selectbox("Hue (optional grouping)", options=["— None —"] + cats,
-                                           key=keyify(dname, "bar_hue"))
-                        hue = None if hue == "— None —" else hue
-                        top_n = st.number_input("Top N categories", min_value=0, value=0, step=1,
-                                                key=keyify(dname, "bar_top"))
-                        sort_desc = st.checkbox("Sort descending", value=True, key=keyify(dname, "bar_sort"))
-                        st.divider()
-                        if cats and x_cat != "— none —":
-                            render_bar_chart(df, x_cat=x_cat, y_num=(y_num if use_y else None),
-                                             agg=agg, hue=hue, top_n=top_n, sort_desc=sort_desc)
-                        else:
-                            st.info("No categorical columns found.")
-                with right:
-                    data_summary_panel(df)
-                    st.divider()
-                    feature_delete_panel(dname)
+    # Two equally sized columns
+    left_col, right_col = st.columns(2)
 
-            # -------- Line Charts (3-pane) --------
-            with chart_tabs[4]:
-                left, mid, right = three_pane(f"Line Charts – {dname}")
-                with left:
-                    chat_for(dname, "line", "🧠 Line Chart Chat",
-                             "Explain time trends, seasonality, resampling and aggregation.")
-                with mid:
-                    st.subheader("🎛️ Controls")
-                    if df.empty:
-                        st.info("Upload data.")
-                    else:
-                        dt_cols = datetime_columns(df)
-                        nums = numeric_columns(df)
-                        time_col = st.selectbox("Time column", options=dt_cols if dt_cols else ["— none —"],
-                                                key=keyify(dname, "line_time"))
-                        y_col = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"],
-                                             key=keyify(dname, "line_y"))
-                        freq = st.selectbox("Resample frequency", options=["D", "W", "M", "Q", "Y"], index=2,
-                                            key=keyify(dname, "line_freq"))
-                        agg = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0,
-                                           key=keyify(dname, "line_agg"))
-                        groupby = st.selectbox("Group by (optional category)", options=["— None —"] + categorical_columns(df),
-                                               key=keyify(dname, "line_group"))
-                        groupby = None if groupby == "— None —" else groupby
-                        st.divider()
-                        if dt_cols and nums and time_col != "— none —" and y_col != "— none —":
-                            render_line_chart(df, time_col=time_col, y_col=y_col, freq=freq, agg=agg, groupby=groupby)
-                        else:
-                            st.info("Select a valid datetime column and a numeric Y.")
-                with right:
-                    data_summary_panel(df)
-                    st.divider()
-                    feature_delete_panel(dname)
+    # ---------- LEFT: Discuss Charts ----------
+    with left_col:
+        st.header("📊 Discuss Charts")
+        st.caption("Talk about the EDA diagrams: preview table, missing values, correlation heatmap, boxplots, categorical counts.")
+        # Show previous chart discussion
+        for m in st.session_state.chart_threads[file_key]:
+            if m.get("tag") == "context":  # skip context echo
+                continue
+            st.chat_message("assistant" if m["role"] == "assistant" else "user").write(m["content"])
+        # Chat input for charts (use placeholder as keyword ONLY)
+        user_left = st.chat_input(
+            placeholder=(seeds.get("left") or "Ask about any chart (e.g., correlations, outliers, categorical imbalance)…"),
+            key=f"chat_charts_{file_key}",
+            max_chars=2000,
+        )
+        if user_left:
+            # clear seed
+            st.session_state.seeds[file_key] = {"left": "", "right": seeds.get("right", "")}
+            try:
+                ctx_text = compact_json(chart_context)
+                system_prompt = (
+                    "You are a senior data analyst. Discuss the charts clearly and practically. "
+                    "Highlight notable patterns, risks, and actions for preprocessing & modeling."
+                )
+                chat_with(st.session_state.chart_threads[file_key], user_left, system_prompt, ctx_text)
+            except Exception as e:
+                st.error(f"Error calling OpenAI API: {e}")
 
-            # -------- Scatter Plots (3-pane) --------
-            with chart_tabs[5]:
-                left, mid, right = three_pane(f"Scatter Plots – {dname}")
-                with left:
-                    chat_for(dname, "scatter", "🧠 Scatter Plot Chat",
-                             "Discuss relationships, clusters, outliers and segmentation.")
-                with mid:
-                    st.subheader("🎛️ Controls")
-                    if df.empty:
-                        st.info("Upload data.")
-                    else:
-                        nums = numeric_columns(df)
-                        cats = categorical_columns(df)
-                        x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"],
-                                         key=keyify(dname, "scatter_x"))
-                        y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"],
-                                         key=keyify(dname, "scatter_y"))
-                        hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats,
-                                           key=keyify(dname, "scatter_hue"))
-                        hue = None if hue == "— None —" else hue
-                        sample_n = st.slider("Sample size", min_value=500, max_value=100_000, value=5_000, step=500,
-                                             key=keyify(dname, "scatter_sample"))
-                        alpha = st.slider("Point opacity", 0.1, 1.0, 0.6, 0.05, key=keyify(dname, "scatter_alpha"))
-                        st.divider()
-                        if nums and x != "— none —" and y != "— none —":
-                            render_scatter(df, x=x, y=y, hue=hue, sample_n=sample_n, alpha=alpha)
-                        else:
-                            st.info("Select numeric columns for X and Y.")
-                with right:
-                    data_summary_panel(df)
-                    st.divider()
-                    feature_delete_panel(dname)
+        # Quick seed buttons
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button(f"What stands out in correlations? — {file_key}", key=f"seed_corr_{file_key}"):
+                st.session_state.seeds[file_key] = {"left": "Which relationships in the heatmap matter most and how to handle multicollinearity?", "right": seeds.get("right", "")}
+                st.rerun()
+        with c2:
+            if st.button(f"Outliers handling? — {file_key}", key=f"seed_out_{file_key}"):
+                st.session_state.seeds[file_key] = {"left": "How should we treat strong outliers—capping, robust scaling, or transformations?", "right": seeds.get("right", "")}
+                st.rerun()
+        with c3:
+            if st.button(f"Categorical imbalance? — {file_key}", key=f"seed_cat_{file_key}"):
+                st.session_state.seeds[file_key] = {"left": "What’s the best encoding given rare categories and imbalance?", "right": seeds.get("right", "")}
+                st.rerun()
 
-            # -------- Bubble Charts (3-pane) --------
-            with chart_tabs[6]:
-                left, mid, right = three_pane(f"Bubble Charts – {dname}")
-                with left:
-                    chat_for(dname, "bubble", "🧠 Bubble Chart Chat",
-                             "Discuss size encoding, multi-dimensional insights and scaling.")
-                with mid:
-                    st.subheader("🎛️ Controls")
-                    if df.empty:
-                        st.info("Upload data.")
-                    else:
-                        nums = numeric_columns(df)
-                        cats = categorical_columns(df)
-                        x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"],
-                                         key=keyify(dname, "bubble_x"))
-                        y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"],
-                                         key=keyify(dname, "bubble_y"))
-                        size_col = st.selectbox("Size (numeric)", options=nums if nums else ["— none —"],
-                                                key=keyify(dname, "bubble_size"))
-                        hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats,
-                                           key=keyify(dname, "bubble_hue"))
-                        hue = None if hue == "— None —" else hue
-                        sample_n = st.slider("Sample size", min_value=500, max_value=100_000, value=5_000, step=500,
-                                             key=keyify(dname, "bubble_sample"))
-                        alpha = st.slider("Point opacity", 0.1, 1.0, 0.6, 0.05, key=keyify(dname, "bubble_alpha"))
-                        st.divider()
-                        if nums and x != "— none —" and y != "— none —" and size_col != "— none —":
-                            render_bubble(df, x=x, y=y, size_col=size_col, hue=hue, sample_n=sample_n, alpha=alpha)
-                        else:
-                            st.info("Select numeric columns for X, Y, and Size.")
-                with right:
-                    data_summary_panel(df)
-                    st.divider()
+    # ---------- RIGHT: Discuss Insights & Feature Engineering ----------
+    with right_col:
+        st.header("🧠 Discuss Insights & Feature Engineering")
+        st.caption("Ask about AI insight cards, data quality score, and concrete feature engineering strategies.")
+        # Show previous insights discussion
+        for m in st.session_state.insight_threads[file_key]:
+            if m.get("tag") == "context":  # skip context echo
+                continue
+            st.chat_message("assistant" if m["role"] == "assistant" else "user").write(m["content"])
+        # Chat input for insights
+        user_right = st.chat_input(
+            placeholder=(seeds.get("right") or "Ask about cleaning priorities, key insights, and feature ideas…"),
+            key=f"chat_insights_{file_key}",
+            max_chars=2000,
+        )
+        if user_right:
+            # clear seed
+            st.session_state.seeds[file_key] = {"left": seeds.get("left", ""), "right": ""}
+            try:
+                ctx_text = compact_json(insight_context_full)
+                system_prompt = (
+                    "You are a principal data scientist. Use the insights, quality score, and EDA signals to propose "
+                    "cleaning priorities and feature engineering plans with clear rationales."
+                )
+                chat_with(st.session_state.insight_threads[file_key], user_right, system_prompt, ctx_text)
+            except Exception as e:
+                st.error(f"Error calling OpenAI API: {e}")
+
+        # Quick seed buttons
+        r1, r2, r3 = st.columns(3)
+        with r1:
+            if st.button(f"Top 5 cleaning steps — {file_key}", key=f"seed_clean_{file_key}"):
+                st.session_state.seeds[file_key] = {"left": seeds.get("left", ""), "right": "What are the top 5 preprocessing steps to improve data quality (with reasons)?"}
+                st.rerun()
+        with r2:
+            if st.button(f"Top 5 feature ideas — {file_key}", key=f"seed_feat_{file_key}"):
+                st.session_state.seeds[file_key] = {"left": seeds.get("left", ""), "right": "Suggest 5 feature engineering ideas tailored to these signals, with brief rationale."}
+                st.rerun()
+        with r3:
+            if st.button(f"Modeling implications — {file_key}", key=f"seed_model_{file_key}"):
+                st.session_state.seeds[file_key] = {"left": seeds.get("left", ""), "right": "How do these insights affect model choice, regularization, and evaluation strategy?"}
+                st.rerun()
