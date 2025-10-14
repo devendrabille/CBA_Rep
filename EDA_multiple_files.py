@@ -23,8 +23,8 @@ SS = {
 # Utilities
 # -----------------------
 def keyify(*parts):
-    """Create a safe Streamlit key from parts (dataset + chart page)."""
-    s = "__".join(parts)
+    """Create a safe Streamlit key from parts (dataset + chart page + element)."""
+    s = "__".join(str(p) for p in parts)
     return re.sub(r"[^a-zA-Z0-9_]", "_", s)
 
 @st.cache_data(show_spinner=False)
@@ -150,25 +150,45 @@ def three_pane(title: str):
 def llm_call(system_prompt: str, messages: list) -> str:
     return "🔎 (Stub) I would explain this chart based on the controls and dataset context."
 
-def chat_panel(state_key: str, header: str, system_prompt: str = None):
+def chat_panel(state_key: str, header: str, system_prompt: str = None,
+               input_key: str = None, clear_key: str = None):
+    """Chat panel with UNIQUE keys for chat_input and clear button."""
     st.subheader(header)
+
+    # Persist messages in session_state under a dataset+chart specific key
     msgs = st.session_state.setdefault(state_key, [])
+
+    # Render past messages
     for m in msgs:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
-    user_input = st.chat_input("Ask about the chart…")
+
+    # ✅ Unique key for chat_input
+    user_input = st.chat_input("Ask about the chart…", key=input_key)
     if user_input:
         msgs.append({"role": "user", "content": user_input})
-        response = llm_call(system_prompt or "", msgs)
+        response = llm_call(system_prompt or "", msgs)   # <-- wire Azure OpenAI here
         msgs.append({"role": "assistant", "content": response})
         st.session_state[state_key] = msgs
+
+    # ✅ Unique key for "Clear chat" button
     cols_btn = st.columns([1, 1])
     with cols_btn[0]:
-        if st.button("Clear chat"):
+        if st.button("Clear chat", key=clear_key):
             st.session_state[state_key] = []
             st.experimental_rerun()
     with cols_btn[1]:
         st.caption("Chat is scoped to this dataset & chart.")
+
+def chat_for(dataset_name: str, chart_slug: str, header: str, prompt: str):
+    """Convenience wrapper to create unique keys per dataset x chart."""
+    return chat_panel(
+        state_key=keyify(dataset_name, "chat", chart_slug),
+        header=header,
+        system_prompt=prompt,
+        input_key=keyify(dataset_name, "chat_input", chart_slug),
+        clear_key=keyify(dataset_name, "chat_clear", chart_slug),
+    )
 
 # -----------------------
 # Right pane: data summary + feature deletion/export
@@ -193,11 +213,16 @@ def feature_delete_panel(dataset_name: str):
         st.info("No data to manage.")
         return
 
-    drop_cols = st.multiselect("Select features to delete", options=list(df.columns), default=[])
+    drop_cols = st.multiselect("Select features to delete", options=list(df.columns), default=[],
+                               key=keyify(dataset_name, "del_multiselect"))
     if drop_cols:
         st.caption(f"Dropping {len(drop_cols)} column(s): {drop_cols}")
 
-    version_name = st.text_input("Version name", value=f"{dataset_name}__drop__{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    version_name = st.text_input(
+        "Version name",
+        value=f"{dataset_name}__drop__{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        key=keyify(dataset_name, "del_version_name")
+    )
     cols = st.columns([1, 1, 1])
     with cols[0]:
         if st.button("Apply deletion", key=keyify(dataset_name, "apply_delete")):
@@ -221,7 +246,8 @@ def feature_delete_panel(dataset_name: str):
 
     st.markdown("---")
     export_fmt = st.selectbox("Export format", ["csv", "parquet"], key=keyify(dataset_name, "export_fmt"))
-    file_name = st.text_input("Export file name (without extension)", value=f"{dataset_name}__cleaned", key=keyify(dataset_name, "export_name"))
+    file_name = st.text_input("Export file name (without extension)", value=f"{dataset_name}__cleaned",
+                              key=keyify(dataset_name, "export_name"))
     out = export_df(get_df(dataset_name), fmt=export_fmt)
     st.download_button(
         label=f"⬇️ Download {export_fmt.upper()}",
@@ -377,8 +403,8 @@ if not datasets:
     st.sidebar.info("Upload files to begin. Parquet requires `pyarrow`; Excel requires `openpyxl`.")
 
 with st.sidebar.expander("Help / Troubleshooting"):
-    st.write("- If charts don't update after deletion, use **Rerun** (↻ in Streamlit menu) or change a control.")
-    st.write("- For large files, use sampling controls on Scatter/Bubble.")
+    st.write("- If charts don't update after deletion, change a control or rerun (↻).")
+    st.write("- For large files, use sampling on Scatter/Bubble.")
     st.write("- Clear cache via **Settings → Clear cache** if data seems stale.")
 
 # -----------------------
@@ -410,11 +436,8 @@ else:
             with chart_tabs[0]:
                 left, mid, right = three_pane(f"Overview – {dname}")
                 with left:
-                    chat_panel(
-                        keyify(dname, "chat_overview"),
-                        header="🧠 Overview Chat",
-                        system_prompt="Summarize dataset shape, types, missingness, and top-level observations."
-                    )
+                    chat_for(dname, "overview", "🧠 Overview Chat",
+                             "Summarize dataset shape, types, missingness, and top-level observations.")
                 with mid:
                     st.subheader("Dataset Preview & Quick Stats")
                     if df.empty:
@@ -441,18 +464,16 @@ else:
             with chart_tabs[1]:
                 left, mid, right = three_pane(f"Box Plots – {dname}")
                 with left:
-                    chat_panel(
-                        keyify(dname, "chat_box"),
-                        header="🧠 Box Plot Chat",
-                        system_prompt="Explain distribution, outliers (IQR), skewness, and group comparisons."
-                    )
+                    chat_for(dname, "box", "🧠 Box Plot Chat",
+                             "Explain distribution, outliers (IQR), skewness, and group comparisons.")
                 with mid:
                     st.subheader("🎛️ Controls")
                     if df.empty:
                         st.info("Upload data.")
                     else:
                         cats = categorical_columns(df)
-                        groupby = st.selectbox("Group by (optional)", options=["— None —"] + cats, key=keyify(dname, "box_group"))
+                        groupby = st.selectbox("Group by (optional)", options=["— None —"] + cats,
+                                               key=keyify(dname, "box_group"))
                         groupby = None if groupby == "— None —" else groupby
                         st.divider()
                         render_boxplots(df, groupby=groupby)
@@ -465,19 +486,19 @@ else:
             with chart_tabs[2]:
                 left, mid, right = three_pane(f"Correlation – {dname}")
                 with left:
-                    chat_panel(
-                        keyify(dname, "chat_corr"),
-                        header="🧠 Correlation Chat",
-                        system_prompt="Discuss correlation strength, multicollinearity and feature selection implications."
-                    )
+                    chat_for(dname, "corr", "🧠 Correlation Chat",
+                             "Discuss correlation strength, multicollinearity and feature selection implications.")
                 with mid:
                     st.subheader("🎛️ Controls")
                     if df.empty:
                         st.info("Upload data.")
                     else:
-                        method = st.radio("Method", ["pearson", "spearman", "kendall"], horizontal=True, key=keyify(dname, "corr_method"))
-                        mask_upper = st.checkbox("Mask upper triangle", value=True, key=keyify(dname, "corr_mask"))
-                        annot = st.checkbox("Show numeric annotations", value=False, key=keyify(dname, "corr_annot"))
+                        method = st.radio("Method", ["pearson", "spearman", "kendall"], horizontal=True,
+                                          key=keyify(dname, "corr_method"))
+                        mask_upper = st.checkbox("Mask upper triangle", value=True,
+                                                 key=keyify(dname, "corr_mask"))
+                        annot = st.checkbox("Show numeric annotations", value=False,
+                                            key=keyify(dname, "corr_annot"))
                         st.divider()
                         render_corr_matrix(df, method=method, mask_upper=mask_upper, annot=annot)
                 with right:
@@ -489,11 +510,8 @@ else:
             with chart_tabs[3]:
                 left, mid, right = three_pane(f"Bar Charts – {dname}")
                 with left:
-                    chat_panel(
-                        keyify(dname, "chat_bar"),
-                        header="🧠 Bar Chart Chat",
-                        system_prompt="Compare categories with sum/mean/count; discuss distributions and top-N."
-                    )
+                    chat_for(dname, "bar", "🧠 Bar Chart Chat",
+                             "Compare categories with sum/mean/count; discuss distributions and top-N.")
                 with mid:
                     st.subheader("🎛️ Controls")
                     if df.empty:
@@ -501,17 +519,24 @@ else:
                     else:
                         cats = categorical_columns(df)
                         nums = numeric_columns(df)
-                        x_cat = st.selectbox("X (categorical)", options=cats if cats else ["— none —"], key=keyify(dname, "bar_x"))
-                        use_y = st.checkbox("Aggregate a numeric column?", value=bool(nums), key=keyify(dname, "bar_usey"))
-                        y_num = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "bar_y")) if use_y and nums else None
-                        agg = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0 if use_y else 2, key=keyify(dname, "bar_agg"))
-                        hue = st.selectbox("Hue (optional grouping)", options=["— None —"] + cats, key=keyify(dname, "bar_hue"))
+                        x_cat = st.selectbox("X (categorical)", options=cats if cats else ["— none —"],
+                                             key=keyify(dname, "bar_x"))
+                        use_y = st.checkbox("Aggregate a numeric column?", value=bool(nums),
+                                            key=keyify(dname, "bar_usey"))
+                        y_num = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"],
+                                             key=keyify(dname, "bar_y")) if use_y and nums else None
+                        agg = st.selectbox("Aggregation", options=["sum", "mean", "count"],
+                                           index=0 if use_y else 2, key=keyify(dname, "bar_agg"))
+                        hue = st.selectbox("Hue (optional grouping)", options=["— None —"] + cats,
+                                           key=keyify(dname, "bar_hue"))
                         hue = None if hue == "— None —" else hue
-                        top_n = st.number_input("Top N categories", min_value=0, value=0, step=1, key=keyify(dname, "bar_top"))
+                        top_n = st.number_input("Top N categories", min_value=0, value=0, step=1,
+                                                key=keyify(dname, "bar_top"))
                         sort_desc = st.checkbox("Sort descending", value=True, key=keyify(dname, "bar_sort"))
                         st.divider()
                         if cats and x_cat != "— none —":
-                            render_bar_chart(df, x_cat=x_cat, y_num=(y_num if use_y else None), agg=agg, hue=hue, top_n=top_n, sort_desc=sort_desc)
+                            render_bar_chart(df, x_cat=x_cat, y_num=(y_num if use_y else None),
+                                             agg=agg, hue=hue, top_n=top_n, sort_desc=sort_desc)
                         else:
                             st.info("No categorical columns found.")
                 with right:
@@ -523,11 +548,8 @@ else:
             with chart_tabs[4]:
                 left, mid, right = three_pane(f"Line Charts – {dname}")
                 with left:
-                    chat_panel(
-                        keyify(dname, "chat_line"),
-                        header="🧠 Line Chart Chat",
-                        system_prompt="Explain time trends, seasonality, resampling and aggregation."
-                    )
+                    chat_for(dname, "line", "🧠 Line Chart Chat",
+                             "Explain time trends, seasonality, resampling and aggregation.")
                 with mid:
                     st.subheader("🎛️ Controls")
                     if df.empty:
@@ -535,11 +557,16 @@ else:
                     else:
                         dt_cols = datetime_columns(df)
                         nums = numeric_columns(df)
-                        time_col = st.selectbox("Time column", options=dt_cols if dt_cols else ["— none —"], key=keyify(dname, "line_time"))
-                        y_col = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "line_y"))
-                        freq = st.selectbox("Resample frequency", options=["D", "W", "M", "Q", "Y"], index=2, key=keyify(dname, "line_freq"))
-                        agg = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0, key=keyify(dname, "line_agg"))
-                        groupby = st.selectbox("Group by (optional category)", options=["— None —"] + categorical_columns(df), key=keyify(dname, "line_group"))
+                        time_col = st.selectbox("Time column", options=dt_cols if dt_cols else ["— none —"],
+                                                key=keyify(dname, "line_time"))
+                        y_col = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"],
+                                             key=keyify(dname, "line_y"))
+                        freq = st.selectbox("Resample frequency", options=["D", "W", "M", "Q", "Y"], index=2,
+                                            key=keyify(dname, "line_freq"))
+                        agg = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0,
+                                           key=keyify(dname, "line_agg"))
+                        groupby = st.selectbox("Group by (optional category)", options=["— None —"] + categorical_columns(df),
+                                               key=keyify(dname, "line_group"))
                         groupby = None if groupby == "— None —" else groupby
                         st.divider()
                         if dt_cols and nums and time_col != "— none —" and y_col != "— none —":
@@ -555,11 +582,8 @@ else:
             with chart_tabs[5]:
                 left, mid, right = three_pane(f"Scatter Plots – {dname}")
                 with left:
-                    chat_panel(
-                        keyify(dname, "chat_scatter"),
-                        header="🧠 Scatter Plot Chat",
-                        system_prompt="Discuss relationships, clusters, outliers and segmentation."
-                    )
+                    chat_for(dname, "scatter", "🧠 Scatter Plot Chat",
+                             "Discuss relationships, clusters, outliers and segmentation.")
                 with mid:
                     st.subheader("🎛️ Controls")
                     if df.empty:
@@ -567,11 +591,15 @@ else:
                     else:
                         nums = numeric_columns(df)
                         cats = categorical_columns(df)
-                        x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "scatter_x"))
-                        y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "scatter_y"))
-                        hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats, key=keyify(dname, "scatter_hue"))
+                        x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"],
+                                         key=keyify(dname, "scatter_x"))
+                        y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"],
+                                         key=keyify(dname, "scatter_y"))
+                        hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats,
+                                           key=keyify(dname, "scatter_hue"))
                         hue = None if hue == "— None —" else hue
-                        sample_n = st.slider("Sample size", min_value=500, max_value=100_000, value=5_000, step=500, key=keyify(dname, "scatter_sample"))
+                        sample_n = st.slider("Sample size", min_value=500, max_value=100_000, value=5_000, step=500,
+                                             key=keyify(dname, "scatter_sample"))
                         alpha = st.slider("Point opacity", 0.1, 1.0, 0.6, 0.05, key=keyify(dname, "scatter_alpha"))
                         st.divider()
                         if nums and x != "— none —" and y != "— none —":
@@ -587,11 +615,8 @@ else:
             with chart_tabs[6]:
                 left, mid, right = three_pane(f"Bubble Charts – {dname}")
                 with left:
-                    chat_panel(
-                        keyify(dname, "chat_bubble"),
-                        header="🧠 Bubble Chart Chat",
-                        system_prompt="Discuss size encoding, multi-dimensional insights and scaling."
-                    )
+                    chat_for(dname, "bubble", "🧠 Bubble Chart Chat",
+                             "Discuss size encoding, multi-dimensional insights and scaling.")
                 with mid:
                     st.subheader("🎛️ Controls")
                     if df.empty:
@@ -599,12 +624,17 @@ else:
                     else:
                         nums = numeric_columns(df)
                         cats = categorical_columns(df)
-                        x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "bubble_x"))
-                        y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "bubble_y"))
-                        size_col = st.selectbox("Size (numeric)", options=nums if nums else ["— none —"], key=keyify(dname, "bubble_size"))
-                        hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats, key=keyify(dname, "bubble_hue"))
+                        x = st.selectbox("X (numeric)", options=nums if nums else ["— none —"],
+                                         key=keyify(dname, "bubble_x"))
+                        y = st.selectbox("Y (numeric)", options=nums if nums else ["— none —"],
+                                         key=keyify(dname, "bubble_y"))
+                        size_col = st.selectbox("Size (numeric)", options=nums if nums else ["— none —"],
+                                                key=keyify(dname, "bubble_size"))
+                        hue = st.selectbox("Hue (optional category)", options=["— None —"] + cats,
+                                           key=keyify(dname, "bubble_hue"))
                         hue = None if hue == "— None —" else hue
-                        sample_n = st.slider("Sample size", min_value=500, max_value=100_000, value=5_000, step=500, key=keyify(dname, "bubble_sample"))
+                        sample_n = st.slider("Sample size", min_value=500, max_value=100_000, value=5_000, step=500,
+                                             key=keyify(dname, "bubble_sample"))
                         alpha = st.slider("Point opacity", 0.1, 1.0, 0.6, 0.05, key=keyify(dname, "bubble_alpha"))
                         st.divider()
                         if nums and x != "— none —" and y != "— none —" and size_col != "— none —":
@@ -614,4 +644,3 @@ else:
                 with right:
                     data_summary_panel(df)
                     st.divider()
-                    feature_delete_panel(dname)
