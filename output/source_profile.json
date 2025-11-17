@@ -1,0 +1,101 @@
+{
+  "rows": 5,
+  "columns": [
+    {
+      "name": "customer_id",
+      "dtype": "object",
+      "dtype_bucket": "string",
+      "nulls": 0,
+      "null_ratio": 0.0,
+      "distinct": 5,
+      "uniqueness_ratio": 1.0,
+      "avg_len": 4.0,
+      "top_patterns": [
+        [
+          "A999",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "first_name",
+      "dtype": "object",
+      "dtype_bucket": "string",
+      "nulls": 0,
+      "null_ratio": 0.0,
+      "distinct": 5,
+      "uniqueness_ratio": 1.0,
+      "avg_len": 4.8,
+      "top_patterns": [
+        [
+          "AAAAA",
+          4
+        ],
+        [
+          "AAAA",
+          1
+        ]
+      ]
+    },
+    {
+      "name": "last_name",
+      "dtype": "object",
+      "dtype_bucket": "string",
+      "nulls": 0,
+      "null_ratio": 0.0,
+      "distinct": 5,
+      "uniqueness_ratio": 1.0,
+      "avg_len": 4.6,
+      "top_patterns": [
+        [
+          "AAAAA",
+          2
+        ],
+        [
+          "AAA",
+          1
+        ],
+        [
+          "AAAAAA",
+          1
+        ],
+        [
+          "AAAA",
+          1
+        ]
+      ]
+    },
+    {
+      "name": "email",
+      "dtype": "object",
+      "dtype_bucket": "string",
+      "nulls": 0,
+      "null_ratio": 0.0,
+      "distinct": 5,
+      "uniqueness_ratio": 1.0,
+      "avg_len": 22.4,
+      "top_patterns": [
+        [
+          "AAAAA.AAA@AAAAAAA.AAA",
+          1
+        ],
+        [
+          "AAAAA.AAAAAA@AAAAAAA.AAA",
+          1
+        ],
+        [
+          "AAAAA.AAAA@AAAAAAA.AAA",
+          1
+        ],
+        [
+          "AAAAA.AAAAA@AAAAAAA.AAA",
+          1
+        ],
+        [
+          "AAAA.AAAAA@AAAAAAA.AAA",
+          1
+        ]
+      ]
+    }
+  ]
+}

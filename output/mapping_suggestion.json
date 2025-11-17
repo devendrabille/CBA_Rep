@@ -1,0 +1,79 @@
+{
+  "src_col": "customer_id",
+  "best": {
+    "src_col": "customer_id",
+    "tgt_col": "cust_id",
+    "name_score": 0.7778,
+    "type_score": 0.6,
+    "overlap_score": 0.0,
+    "coverage_score": 0.0,
+    "total_score": 0.3833
+  },
+  "top3": [
+    {
+      "src_col": "customer_id",
+      "tgt_col": "cust_id",
+      "name_score": 0.7778,
+      "type_score": 0.6,
+      "overlap_score": 0.0,
+      "coverage_score": 0.0,
+      "total_score": 0.3833
+    },
+    {
+      "src_col": "customer_id",
+      "tgt_col": "full_name",
+      "name_score": 0.3,
+      "type_score": 1.0,
+      "overlap_score": 0.0,
+      "coverage_score": 0.0,
+      "total_score": 0.34
+    },
+    {
+      "src_col": "customer_id",
+      "tgt_col": "city",
+      "name_score": 0.2667,
+      "type_score": 1.0,
+      "overlap_score": 0.0,
+      "coverage_score": 0.0,
+      "total_score": 0.33
+    }
+  ],
+  "all": [
+    {
+      "src_col": "customer_id",
+      "tgt_col": "cust_id",
+      "name_score": 0.7778,
+      "type_score": 0.6,
+      "overlap_score": 0.0,
+      "coverage_score": 0.0,
+      "total_score": 0.3833
+    },
+    {
+      "src_col": "customer_id",
+      "tgt_col": "full_name",
+      "name_score": 0.3,
+      "type_score": 1.0,
+      "overlap_score": 0.0,
+      "coverage_score": 0.0,
+      "total_score": 0.34
+    },
+    {
+      "src_col": "customer_id",
+      "tgt_col": "city",
+      "name_score": 0.2667,
+      "type_score": 1.0,
+      "overlap_score": 0.0,
+      "coverage_score": 0.0,
+      "total_score": 0.33
+    },
+    {
+      "src_col": "customer_id",
+      "tgt_col": "email_address",
+      "name_score": 0.0833,
+      "type_score": 1.0,
+      "overlap_score": 0.0,
+      "coverage_score": 0.0,
+      "total_score": 0.275
+    }
+  ]
+}

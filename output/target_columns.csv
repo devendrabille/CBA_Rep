@@ -1,0 +1,5 @@
+name,dtype,bucket,null_ratio,distinct,uniqueness_ratio,avg_len,top_patterns
+cust_id,int64,numeric,0.0,5,1.0,,9
+full_name,object,string,0.0,5,1.0,10.4,AAAAA AAA;AAAAA AAAAAA;AAAAA AAAA;AAAAA AAAAA;AAAA AAAAA
+email_address,object,string,0.0,5,1.0,22.4,AAAAA.AAA@AAAAAAA.AAA;AAAAA.AAAAAA@AAAAAAA.AAA;AAAAA.AAAA@AAAAAAA.AAA;AAAAA.AAAAA@AAAAAAA.AAA;AAAA.AAAAA@AAAAAAA.AAA
+city,object,string,0.0,5,1.0,7.0,AAAAAAAAA;AAAA;AAAAAAA;AAAAAA

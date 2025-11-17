@@ -1,0 +1,113 @@
+{
+  "rows": 5,
+  "columns": [
+    {
+      "name": "cust_id",
+      "dtype": "int64",
+      "dtype_bucket": "numeric",
+      "nulls": 0,
+      "null_ratio": 0.0,
+      "distinct": 5,
+      "uniqueness_ratio": 1.0,
+      "avg_len": null,
+      "top_patterns": [
+        [
+          "9",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "full_name",
+      "dtype": "object",
+      "dtype_bucket": "string",
+      "nulls": 0,
+      "null_ratio": 0.0,
+      "distinct": 5,
+      "uniqueness_ratio": 1.0,
+      "avg_len": 10.4,
+      "top_patterns": [
+        [
+          "AAAAA AAA",
+          1
+        ],
+        [
+          "AAAAA AAAAAA",
+          1
+        ],
+        [
+          "AAAAA AAAA",
+          1
+        ],
+        [
+          "AAAAA AAAAA",
+          1
+        ],
+        [
+          "AAAA AAAAA",
+          1
+        ]
+      ]
+    },
+    {
+      "name": "email_address",
+      "dtype": "object",
+      "dtype_bucket": "string",
+      "nulls": 0,
+      "null_ratio": 0.0,
+      "distinct": 5,
+      "uniqueness_ratio": 1.0,
+      "avg_len": 22.4,
+      "top_patterns": [
+        [
+          "AAAAA.AAA@AAAAAAA.AAA",
+          1
+        ],
+        [
+          "AAAAA.AAAAAA@AAAAAAA.AAA",
+          1
+        ],
+        [
+          "AAAAA.AAAA@AAAAAAA.AAA",
+          1
+        ],
+        [
+          "AAAAA.AAAAA@AAAAAAA.AAA",
+          1
+        ],
+        [
+          "AAAA.AAAAA@AAAAAAA.AAA",
+          1
+        ]
+      ]
+    },
+    {
+      "name": "city",
+      "dtype": "object",
+      "dtype_bucket": "string",
+      "nulls": 0,
+      "null_ratio": 0.0,
+      "distinct": 5,
+      "uniqueness_ratio": 1.0,
+      "avg_len": 7.0,
+      "top_patterns": [
+        [
+          "AAAAAAAAA",
+          2
+        ],
+        [
+          "AAAA",
+          1
+        ],
+        [
+          "AAAAAAA",
+          1
+        ],
+        [
+          "AAAAAA",
+          1
+        ]
+      ]
+    }
+  ]
+}
